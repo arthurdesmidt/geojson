@@ -1,0 +1,2 @@
+{"visual":{"name":"BIMappy","displayName":"BIMappy 6.9 Beta","guid":"BImappy","visualClassName":"Visual","version":"1.0.6.9","description":"geopAppPowerBI","supportUrl":"www.destartendeondernemer.com","gitHubUrl":""},"apiVersion":"5.3.0","author":{"name":"Arthur de Smidt","email":"groenecocreaties@gmail.com"},"assets":{"icon":"assets/icon.png"},"externalJS":null
+,"style":"style/visual.less","capabilities":"capabilities.json","dependencies":null,"stringResources":[],"version":"1.0.6.9"}

@@ -1,0 +1,189 @@
+{
+    "dataRoles": [
+        {
+            "name": "latitude",
+            "kind": "Grouping",
+            "displayName": "Latitude",
+            "description": "Latitude coordinates"
+        },
+        {
+            "name": "longitude",
+            "kind": "Grouping",
+            "displayName": "Longitude",
+            "description": "Longitude coordinates"
+        },
+        {
+            "name": "tooltipFields",
+            "kind": "Grouping",
+            "displayName": "Tooltip Fields",
+            "description": "Fields to show in tooltip"
+        }
+    ],
+    "dataViewMappings": [
+        {
+            "conditions": [
+                {
+                    "latitude": {
+                        "max": 1
+                    },
+                    "longitude": {
+                        "max": 1
+                    },
+                    "tooltipFields": {
+                        "max": 10
+                    }
+                }
+            ],
+            "table": {
+                "rows": {
+                    "select": [
+                        { "for": { "in": "latitude" } },
+                        { "for": { "in": "longitude" } },
+                        { "for": { "in": "tooltipFields" } }
+                    ],
+                    "dataReductionAlgorithm": {
+                        "top": {
+                            "count": 1000000
+                        }
+                    }
+                }
+            }
+        }
+    ],
+    "objects":  {
+        "mapSettingsCard": {
+            "displayName": "Map Settings",
+            "properties": {
+                "zoomLevel": {
+                    "displayName": "Zoom Level",
+                    "type": { 
+                        "numeric": true 
+                    }
+                }
+            }
+        },
+        "licenseCard": {
+                "displayName": "License Settings",
+                "properties": {
+                    "licenseKey": {
+                        "displayName": "License Key",
+                        "type": { "text": true }
+                    }
+                }
+        },
+        
+         "markerStyleCard": {
+                "displayName": "Marker Style",
+                "description": "Customize the appearance of map markers",
+                "properties": {
+                    "markerRadius": {
+                        "displayName": "Marker Size",
+                        "description": "Size of the marker points",
+                        "type": {
+                            "numeric": true
+                        }
+                    },
+                    "markerColor": {
+                        "displayName": "Fill Color",
+                        "description": "Fill color of the markers",
+                        "type": {
+                            "fill": {
+                                "solid": {
+                                    "color": true
+                                }
+                            }
+                        }
+                    },
+                    "borderColor": {
+                        "displayName": "Border Color",
+                        "description": "Color of the marker border",
+                        "type": {
+                            "fill": {
+                                "solid": {
+                                    "color": true
+                                }
+                            }
+                        }
+                    },
+                    "borderWidth": {
+                        "displayName": "Border Width",
+                        "description": "Width of the marker border",
+                        "type": {
+                            "numeric": true
+                        }
+                    },
+                    "opacity": {
+                        "displayName": "Opacity",
+                        "description": "Opacity of the markers (0-100)",
+                        "type": {
+                            "numeric": true
+                        }
+                    }
+                }
+            
+        },
+        "geoJsonCard": {
+            "displayName": "GeoJSON Filter Layer",
+                "properties": {
+                    "geoJsonUrl": {
+                        "displayName": "GeoJSON URL",
+                        "description": "Enter URL to GeoJSON file",
+                        "type": {
+                            "text": true
+                        }
+                    },
+                "layerColor": {
+                    "displayName": "Layer Color",
+                    "description": "Color of the GeoJSON layer",
+                    "type": {
+                        "fill": {
+                            "solid": {
+                                "color": true
+                            }
+                        }
+                    }
+                },
+                "opacity": {
+                    "displayName": "Layer Opacity",
+                    "description": "Opacity of the GeoJSON layer (0-100)",
+                    "type": {
+                        "numeric": true
+                    }
+                },
+                "activateFilter": {
+                    "displayName": "Activate Filter",
+                    "description": "Enable or disable the GeoJSON filter",
+                    "type": {
+                        "bool": true 
+                    }
+                }
+            }
+        },
+        "zoomSelectionCard":{
+            "displayName": "Zoom Selection Settings",
+            "properties": {
+                "enableZoomSelection": {
+                    "displayName": "Enable Selection Based on Zoom",
+                    "description": "Enable or disable selection based on visible markers during zoom/pan.",
+                    "type": {
+                        "bool": true 
+                    }
+                }
+
+            }
+        }  },
+    "privileges": [{
+        "name": "WebAccess",
+        "essential": true,
+        "parameters": [
+            "https://*.githubusercontent.com",
+            "https://raw.githubusercontent.com",
+            "https://*.opentopomap.org",
+            "https://*.openstreetmap.org",
+            "https://*.arcgisonline.com",
+            "https://*.stadiamaps.com"
+        ]
+    }]
+    
+}
+
