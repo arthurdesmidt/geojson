@@ -1,77 +1,1134 @@
-/*
-*  Power BI Visual CLI
-*
-*  Copyright (c) Microsoft Corporation
-*  All rights reserved.
-*  MIT License
-*
-*  Permission is hereby granted, free of charge, to any person obtaining a copy
-*  of this software and associated documentation files (the ""Software""), to deal
-*  in the Software without restriction, including without limitation the rights
-*  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-*  copies of the Software, and to permit persons to whom the Software is
-*  furnished to do so, subject to the following conditions:
-*
-*  The above copyright notice and this permission notice shall be included in
-*  all copies or substantial portions of the Software.
-*
-*  THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-*  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-*  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-*  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-*  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-*  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-*  THE SOFTWARE.
-*/
-"use strict";
-
-import powerbi from "powerbi-visuals-api";
-import { FormattingSettingsService } from "powerbi-visuals-utils-formattingmodel";
 import "./../style/visual.less";
+import "./../node_modules/leaflet/dist/leaflet.css";
+import powerbi from "powerbi-visuals-api";
+import * as L from "leaflet";
+import * as leafletPip from '@mapbox/leaflet-pip';
+import { FormattingSettingsService } from "powerbi-visuals-utils-formattingmodel";
+import { VisualFormattingSettingsModel } from "./settings";
+import RBush from 'rbush';
+import { GeoJSONLayer} from './geoJSONLayer';
+import { isValidLicense } from './licenseKeys';
 
+//import 'leaflet-editable';
+import * as _ from 'lodash';
+
+// Import necessary Power BI types
 import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructorOptions;
 import VisualUpdateOptions = powerbi.extensibility.visual.VisualUpdateOptions;
 import IVisual = powerbi.extensibility.visual.IVisual;
-
-import { VisualFormattingSettingsModel } from "./settings";
+import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
+import ISelectionManager = powerbi.extensibility.ISelectionManager;
 
 export class Visual implements IVisual {
     private target: HTMLElement;
-    private updateCount: number;
-    private textNode: Text;
+    private map: L.Map;
+    private geoJSONLayer: GeoJSONLayer;
     private formattingSettings: VisualFormattingSettingsModel;
     private formattingSettingsService: FormattingSettingsService;
-
+    private host: powerbi.extensibility.visual.IVisualHost;
+    private selectionManager: ISelectionManager;
+    private pointsLayer: L.LayerGroup; // Layer for all points
+    private selectedPointsLayer: L.LayerGroup; // Layer for selected points (inside GeoJSON)
+    private unselectedPointsLayer: L.LayerGroup; // Layer for unselected points (outside GeoJSON)
+    private geoJsonLayer: L.GeoJSON;
+    private lastDataView: powerbi.DataView;
+    private layerControl: L.Control.Layers;
+    private timerElement: HTMLElement;
+    private geoJsonIndex = new RBush();
+    private currentGeoJsonColor: string;
+    private currentGeoJsonOpacity: number;
+    private currentGeoJsonUrl: string = '';
+    private previousFilterState: boolean = false;
+    private progressElement: HTMLElement;
+    private isInitialLoad: boolean = true; // Vlag voor initiële opbouw
+    private previousRowCount: number = 0;
+    private areMapBoundsInitialized: boolean = false;
+    private debouncedSaveMapBounds: _.DebouncedFunc<() => void>;
+    private isFirstLoad: boolean = true;
+    private wasHidden: boolean = false;
+    private previousDataLength: number = 0;
+    previousMarkerColor: string;
+    previousBorderColor: string;
+    previousBorderWidth: number;
+    previousOpacity: number;
+    previousMarkerRadius: number;
+    private licenseValidated: boolean = false;
+   
     constructor(options: VisualConstructorOptions) {
-        console.log('Visual constructor', options);
-        this.formattingSettingsService = new FormattingSettingsService();
+        console.log('Visual constructor called');
+
+        // Check if options are provided
+        if (!options) {
+            console.error('No options provided');
+            return;
+        }
+    
+        // Store the target element (where the visual will be rendered)
         this.target = options.element;
-        this.updateCount = 0;
-        if (document) {
-            const new_p: HTMLElement = document.createElement("p");
-            new_p.appendChild(document.createTextNode("Update count:"));
-            const new_em: HTMLElement = document.createElement("em");
-            this.textNode = document.createTextNode(this.updateCount.toString());
-            new_em.appendChild(this.textNode);
-            new_p.appendChild(new_em);
-            this.target.appendChild(new_p);
+        if (!this.target) {
+            console.error('Target element is null');
+            return;
+        }
+        
+        console.log('Target element:', this.target);
+        this.host = options.host;
+        
+        // Create timer element
+        this.timerElement = document.createElement('div');
+        this.timerElement.style.position = 'absolute';
+        this.timerElement.style.top = '10px';
+        this.timerElement.style.left = '10px';
+        this.timerElement.style.zIndex = '1000';
+        this.timerElement.style.backgroundColor = 'white';
+        this.timerElement.style.padding = '5px';
+        this.timerElement.style.border = '1px solid black';
+        this.timerElement.style.display = 'none'; // Hide initially, show only when needed
+        this.target.appendChild(this.timerElement);
+    
+        // Initialize selection manager
+        this.selectionManager = this.host.createSelectionManager();
+        console.log('Selection manager initialized');
+    
+        // Initialize formatting settings service
+        this.formattingSettingsService = new FormattingSettingsService();
+        console.log('Formatting settings service initialized');
+        
+        // Initialize default formatting settings
+        this.formattingSettings = new VisualFormattingSettingsModel();
+        
+        // Add visibility change listener
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                console.log('Page hidden - saving state');
+                this.wasHidden = true;
+            }
+        });
+    
+        try {
+            // Initialize the Leaflet map
+            console.log('Initializing map...');
+            this.map = L.map(this.target, {
+                center: [52.505, 4.89], // Default center (Amsterdam)
+                zoom: 11, // Default zoom level
+                zoomControl: true
+            });
+            
+            console.log('Map initialized');
+    
+            // Add a tile layer (OpenStreetMap)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(this.map);
+            
+            console.log('Base tile layer added');
+    
+            // Initialize the GeoJSONLayer
+            this.geoJSONLayer = new GeoJSONLayer(this.map);
+            console.log('GeoJSON layer initialized');
+            
+            // Initialize layer groups
+            this.pointsLayer = L.layerGroup().addTo(this.map);
+            this.selectedPointsLayer = L.layerGroup().addTo(this.map);
+            this.unselectedPointsLayer = L.layerGroup().addTo(this.map);
+            console.log('Layer groups initialized');
+    
+            // Set zIndex for the points layers
+            this.pointsLayer.eachLayer((layer: L.Layer) => {
+                if (layer instanceof L.FeatureGroup) {
+                    layer.setZIndex(200); // Punten op de voorgrond
+                }
+            });
+    
+            this.selectedPointsLayer.eachLayer((layer: L.Layer) => {
+                if (layer instanceof L.FeatureGroup) {
+                    layer.setZIndex(200); // Geselecteerde punten op de voorgrond
+                }
+            });
+    
+            this.unselectedPointsLayer.eachLayer((layer: L.Layer) => {
+                if (layer instanceof L.FeatureGroup) {
+                    layer.setZIndex(200); // Niet-geselecteerde punten op de voorgrond
+                }
+            });
+            
+            // Initialize layer control
+            const baseLayers = {
+                "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors',
+                    zIndex: 100 // Zorg ervoor dat de kaart op de achtergrond blijft
+                })
+            };
+            
+            const overlayLayers = {
+                "Points": this.pointsLayer,
+                "Selected Points": this.selectedPointsLayer,
+                "Unselected Points": this.unselectedPointsLayer
+            };
+            
+            // Add GeoJSON Layer only if it exists
+            const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+            
+            if (geoJsonLayer) {
+                overlayLayers["GeoJSON Layer"] = geoJsonLayer;
+                this.geoJsonLayer.eachLayer((layer: L.Layer) => {
+                    if (layer instanceof L.FeatureGroup) {
+                        layer.setZIndex(150); // laag in het midden
+                    }
+                });
+            }
+            
+            this.layerControl = L.control.layers(baseLayers, overlayLayers).addTo(this.map);
+            console.log('Layer control added');
+            
+            this.setupMapEventListeners();
+            console.log('Map event listeners set up');
+            
+            // Initialize state variables
+            this.currentGeoJsonUrl = '';
+            this.previousFilterState = false;
+            this.licenseValidated = false;
+            this.previousMarkerColor = '';
+            this.previousBorderColor = '';
+            this.previousBorderWidth = 0;
+            this.previousOpacity = 0;
+            this.previousMarkerRadius = 0;
+            
+            // Show default license warning
+            this.showLicenseWarning();
+            
+            console.log('Visual constructor completed successfully');
+        } catch (error) {
+            console.error('Error initializing visual:', error);
         }
     }
 
     public update(options: VisualUpdateOptions) {
-        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(VisualFormattingSettingsModel, options.dataViews[0]);
 
-        console.log('Visual update', options);
-        if (this.textNode) {
-            this.textNode.textContent = (this.updateCount++).toString();
+        console.log('Update called with type:', options.type);
+
+        if (!this.target.offsetParent) {
+            console.log('Visual is not active, marking as hidden');
+            this.wasHidden = true;
+            return;
+        }
+    
+        console.log('Update called, firstLoad:', this.isFirstLoad, 'wasHidden:', this.wasHidden);
+    
+        // Check if data is available
+        if (!options.dataViews || !options.dataViews[0]) {
+            console.log('No data available');
+            return;
+        }
+
+        // Save the last data view
+        const currentDataView = options.dataViews[0];
+        this.lastDataView = currentDataView;
+    
+        // Update formatting settings first
+        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
+            VisualFormattingSettingsModel,
+            this.lastDataView
+        );
+        
+        console.log('Formatting settings updated:', 
+            this.formattingSettings ? 'Success' : 'Failed', 
+            'Cards available:', 
+            this.formattingSettings ? Object.keys(this.formattingSettings).join(', ') : 'None'
+        );
+        // Initialiseer van opgeslagen instellingen - deze moet vóór de andere checks
+        this.initializeFromPersistedSettings(currentDataView);
+
+        this.checkStoredLicenseKey();
+         // Check for shared license key first
+        const sharedKey = this.formattingSettings.reportSettings.sharedLicenseKey.value;
+        if (sharedKey && !this.licenseValidated) {
+            console.log('Found shared license key, applying to local settings');
+            this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+            this.validateLicense();
+       }
+
+        // Check if validate button was pressed
+        // Check for validate button state change
+        const validateButtonState = this.formattingSettings.licenseCard?.validateButton;
+        console.log('Validate button state:', validateButtonState);
+        
+        if (validateButtonState) {
+            console.log('Validate button is ON, triggering validation');
+            
+            // Reset the button state
+            this.host.persistProperties({
+                merge: [{
+                    objectName: 'licenseCard',
+                    properties: { validateButton: false },
+                    selector: null
+                }]
+            });
+
+        // Get the current license key
+        const licenseKey = this.formattingSettings.licenseCard.licenseKey.value;
+        if (licenseKey) {
+            console.log('License key found, starting validation and persistence');
+            // Store it at report level before validation
+            this.persistSharedLicenseKey(licenseKey);
+            this.validateLicense();
+        } else {
+            console.log('No license key provided');
+            this.showLicenseWarning();
+        }
+    }
+    
+        // Get the current number of rows
+        const currentRowCount = currentDataView.table?.rows?.length || 0;
+    
+        // Check if the number of rows has changed
+        const isRowCountChanged = currentRowCount !== this.previousRowCount;
+        console.log('row count changed', isRowCountChanged, currentRowCount, this.previousRowCount);
+        
+        // Update the previous row count
+        this.previousRowCount = currentRowCount;
+    
+        if (this.lastDataView.table) {
+            console.log('Table columns:', this.lastDataView.table.columns);
+            console.log('Number of rows:', this.lastDataView.table.rows.length);
+        } else {
+            console.log('No table data available');
+        }
+    
+        // Handle GeoJSON updates
+        const geoJsonUrl = this.formattingSettings.geoJsonCard.geoJsonUrl.value;
+        const urlChanged = geoJsonUrl !== this.currentGeoJsonUrl;
+        
+        // Handle GeoJSON updates if URL changed
+        if (this.lastDataView) {
+            if (!geoJsonUrl || geoJsonUrl === '') {
+                console.log('GeoJSON URL removed or reset, removing GeoJSON layer...');
+                console.log('GeoJSON URL is empty, disabling filter...');
+                this.formattingSettings.geoJsonCard.activateFilter.visible = false;
+                this.removeGeoJSONLayer();
+                this.currentGeoJsonUrl = ''; // Reset de huidige URL
+            } else if (urlChanged) {
+                console.log('GeoJSON URL changed:', geoJsonUrl);
+                this.currentGeoJsonUrl = geoJsonUrl;
+                this.loadGeoJSONData(geoJsonUrl);
+                this.formattingSettings.geoJsonCard.activateFilter.visible = true;
+                console.log('einde GeoJSON URL changed'); 
+            }
+        }
+    
+        console.log('geojsonlaag settings kleur en opacity'); 
+        const GeoJsonColor = this.formattingSettings.geoJsonCard.layerColor.value.value;
+        if (GeoJsonColor != this.currentGeoJsonColor) {
+            this.currentGeoJsonColor = GeoJsonColor;
+            this.geoJSONLayer.setColor(GeoJsonColor);
+        }
+    
+        const GeoJsonOpacity = this.formattingSettings.geoJsonCard.opacity.value / 100;
+        if (GeoJsonOpacity != this.currentGeoJsonOpacity) {
+            this.currentGeoJsonOpacity = GeoJsonOpacity;
+            this.geoJSONLayer.setOpacity(GeoJsonOpacity);
+        }
+    
+        const isMarkerStyleChanged =
+            this.formattingSettings.markerStyleCard.markerColor.value.value !== this.previousMarkerColor ||
+            this.formattingSettings.markerStyleCard.borderColor.value.value !== this.previousBorderColor ||
+            this.formattingSettings.markerStyleCard.borderWidth.value !== this.previousBorderWidth ||
+            this.formattingSettings.markerStyleCard.opacity.value !== this.previousOpacity ||
+            this.formattingSettings.markerStyleCard.markerRadius.value !== this.previousMarkerRadius;
+    
+        if (isMarkerStyleChanged) { 
+            this.updateMarkerStyle();
+        }
+    
+        // Update previous marker style values
+        this.previousMarkerColor = this.formattingSettings.markerStyleCard.markerColor.value.value;
+        this.previousBorderColor = this.formattingSettings.markerStyleCard.borderColor.value.value;
+        this.previousBorderWidth = this.formattingSettings.markerStyleCard.borderWidth.value;
+        this.previousOpacity = this.formattingSettings.markerStyleCard.opacity.value;
+        this.previousMarkerRadius = this.formattingSettings.markerStyleCard.markerRadius.value;
+    
+        // First load handling
+        if (this.isInitialLoad) {
+            console.log('First load - drawing initial points');
+            const markers = this.drawPoints(this.lastDataView);
+            if (this.isInitialLoad && markers.length > 0) {
+                console.log('first load executed', this.isInitialLoad, 'markerslength', markers.length);
+                this.map.fitBounds(L.latLngBounds(markers), {
+                    padding: [50, 50],
+                    maxZoom: 15
+                });
+                this.isInitialLoad = false;
+                this.updateMarkerStyle();
+            }
+        }
+    
+        // Row count changed handling
+        if (isRowCountChanged) {
+            console.log('Row count changed -draw changes');
+            this.updateVisualBasedOnFilters();
+        }
+    
+        console.log("einde instellen staat van markers");
+    
+        const isFilterActivated = this.formattingSettings.geoJsonCard.activateFilter.value;
+        if (isFilterActivated !== this.previousFilterState) {
+            if (isFilterActivated) {
+                console.log('Filter is activated, applying GeoJSON filter...', isFilterActivated, this.previousFilterState);
+                this.applyGeoJSONFilter();
+            } else {
+                console.log('Filter is deactivated, resetting GeoJSON filter...', isFilterActivated, this.previousFilterState);
+                this.resetGeoJSONFilter();
+                const markers = this.drawPoints(this.lastDataView);
+                this.updateMarkerStyle();
+            }
+    
+            // Update the previous filter state
+            this.previousFilterState = isFilterActivated;
+        }
+
+    }
+
+    private validateLicense() {
+        console.log('Validate license called');
+    
+        if (!this.formattingSettings?.licenseCard) {
+            console.error('No formatting settings available');
+            return;
+        }
+    
+        const licenseKey = this.formattingSettings.licenseCard.licenseKey.value;
+        console.log('Current license key:', licenseKey);
+    
+        if (!licenseKey) {
+            console.log('No license key provided');
+            this.showLicenseWarning();
+            return;
+        }
+    
+
+        
+    
+        if (isValidLicense(licenseKey)) {
+            console.log('License valid, enabling functionality');
+            this.licenseValidated = true;
+            
+            // Store in report settings
+            this.persistSharedLicenseKey(licenseKey);
+            
+            // Remove watermark and show success
+            this.enableFullFunctionality();
+            this.showLicenseSuccess();
+        } else {
+            console.log('License invalid');
+            this.licenseValidated = false;
+            this.showLicenseWarning();
+        }
+    }
+    
+    private enableFullFunctionality() {
+        console.log('Enabling full functionality');
+        
+        // Remove the watermark with class
+        const existingWatermark = this.target.querySelector('.license-watermark');
+        if (existingWatermark) {
+            console.log('Found watermark, removing');
+            existingWatermark.remove();
+        } else {
+            console.log('No watermark found with class, trying by text content');
+            // Fallback: find by text content
+            const elements = this.target.querySelectorAll('a');
+            elements.forEach(element => {
+                if (element.innerText && element.innerText.includes('BIMappy Unlicensed')) {
+                    console.log('Found watermark by text, removing');
+                    element.remove();
+                }
+            });
+        }
+    
+        // Show success message temporarily
+        this.showLicenseSuccess();
+    }
+    
+    private showLicenseSuccess() {
+        console.log('Showing success message');
+        const successMessage = document.createElement('div');
+        successMessage.style.position = 'absolute';
+        successMessage.style.bottom = '50px';
+        successMessage.style.left = '50%';
+        successMessage.style.transform = 'translateX(-50%)';
+        successMessage.style.backgroundColor = 'rgba(0, 128, 0, 0.8)';
+        successMessage.style.color = 'white';
+        successMessage.style.padding = '10px 20px';
+        successMessage.style.borderRadius = '5px';
+        successMessage.style.zIndex = '2000';
+        successMessage.innerText = 'License validated successfully!';
+        this.target.appendChild(successMessage);
+    
+        // Remove after 3 seconds
+        setTimeout(() => {
+            if (successMessage.parentNode) {
+                successMessage.parentNode.removeChild(successMessage);
+            }
+        }, 3000);
+    }
+    
+    private showLicenseWarning() {
+        console.log('Showing license warning');
+        
+        // Remove any existing watermark first
+        const existingWatermark = this.target.querySelector('.license-watermark');
+        if (existingWatermark) {
+            existingWatermark.remove();
+        }
+    
+        const watermark = document.createElement('a');
+        watermark.className = 'license-watermark';  // Add class for easy finding later
+        watermark.style.position = 'absolute';
+        watermark.style.bottom = '10px';
+        watermark.style.left = '50%';
+        watermark.style.transform = 'translateX(-50%)';
+        watermark.style.color = 'rgba(0, 0, 0, 0.5)';
+        watermark.style.fontSize = '28px';
+        watermark.style.zIndex = '1000';
+        watermark.style.textDecoration = 'none';
+        watermark.href = 'https://www.bimappy.nl';
+        watermark.target = '_blank';
+        watermark.innerText = 'BIMappy Unlicensed';
+        this.target.appendChild(watermark);
+    }
+    
+    private persistSharedLicenseKey(licenseKey: string) {
+        console.log('Attempting to persist shared license key:', licenseKey);
+        
+        try {
+            // Update both the formatting settings and persist to report level
+            if (this.formattingSettings?.reportSettings) {
+                console.log('Updating reportSettings in formatting settings');
+                this.formattingSettings.reportSettings.sharedLicenseKey.value = licenseKey;
+            }
+    
+            // Persist to report level using host
+            this.host.persistProperties({
+                merge: [
+                    {
+                        objectName: 'reportSettings',
+                        properties: {
+                            sharedLicenseKey: licenseKey
+                        },
+                        selector: null
+                    },
+                    {
+                        objectName: 'licenseCard',
+                        properties: {
+                            licenseKey: licenseKey
+                        },
+                        selector: null
+                    }
+                ]
+            });
+    
+            console.log('License key persisted successfully:', {
+                reportSettingsKey: this.formattingSettings?.reportSettings?.sharedLicenseKey?.value,
+                licenseCardKey: this.formattingSettings?.licenseCard?.licenseKey?.value
+            });
+        } catch (error) {
+            console.error('Error persisting license key:', error);
+        }
+    }
+    
+    // Helper functie om de initiële status te controleren
+    private initializeFromPersistedSettings(dataView: powerbi.DataView) {
+        console.log('Initializing from persisted settings');
+        
+        const objects = dataView.metadata?.objects;
+        if (!objects) {
+            console.log('No persisted objects found');
+            return;
+        }
+    
+        // Log alle gevonden objecten
+        console.log('Found persisted objects:', objects);
+    
+        // Check reportSettings
+        if (objects.reportSettings?.sharedLicenseKey) {
+            const sharedKey = objects.reportSettings.sharedLicenseKey as string;
+            console.log('Found shared key in reportSettings:', objects.reportSettings.sharedLicenseKey);
+            
+            // Update both locations
+            if (this.formattingSettings.reportSettings) {
+                this.formattingSettings.reportSettings.sharedLicenseKey.value = sharedKey;
+            }
+            if (this.formattingSettings.licenseCard) {
+                this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+            }
+    
+            // Validate if we have a key
+            if (objects.reportSettings.sharedLicenseKey && !this.licenseValidated) {
+                this.validateLicense();
+            }
+        }
+    }
+    
+    private checkStoredLicenseKey() {
+        console.log('Checking stored license information:');
+        console.log('Formatting settings:', this.formattingSettings);
+        
+        if (this.formattingSettings?.reportSettings) {
+            console.log('Report settings shared key:', 
+                this.formattingSettings.reportSettings.sharedLicenseKey.value);
+        }
+        
+        if (this.formattingSettings?.licenseCard) {
+            console.log('License card key:', 
+                this.formattingSettings.licenseCard.licenseKey.value);
+        }
+    }
+    
+   
+
+    private handleMapBounds(options: VisualUpdateOptions) {
+        if (!this.formattingSettings?.mapBoundsCard) {
+            console.log('mapBoundsCard not initialized');
+            return;
+        }
+    
+        // Log the raw object first
+        console.log('Raw mapBoundsCard:', this.formattingSettings.mapBoundsCard);
+    
+        // Check if we have persisted properties in the dataView
+        const objects = options.dataViews[0].metadata?.objects;
+        if (objects?.mapBoundsCard) {
+            console.log('Found persisted map bounds:', objects.mapBoundsCard);
+            
+            // Update formatting settings with persisted values
+            this.formattingSettings.mapBoundsCard.north.value = Number(objects.mapBoundsCard['north']) || 0;
+            this.formattingSettings.mapBoundsCard.south.value = Number(objects.mapBoundsCard['south']) || 0;
+            this.formattingSettings.mapBoundsCard.east.value = Number(objects.mapBoundsCard['east']) || 0;
+            this.formattingSettings.mapBoundsCard.west.value = Number(objects.mapBoundsCard['west']) || 0;
+            this.formattingSettings.mapBoundsCard.zoom.value = Number(objects.mapBoundsCard['zoom']) || 0;
+    
+            console.log('Updated formatting settings with persisted values:', {
+                north: this.formattingSettings.mapBoundsCard.north.value,
+                south: this.formattingSettings.mapBoundsCard.south.value,
+                east: this.formattingSettings.mapBoundsCard.east.value,
+                west: this.formattingSettings.mapBoundsCard.west.value,
+                zoom: this.formattingSettings.mapBoundsCard.zoom.value
+            });
+    
+            // Only set bounds if we have valid values
+            if (this.formattingSettings.mapBoundsCard.north.value !== 0 &&
+                this.formattingSettings.mapBoundsCard.south.value !== 0 &&
+                this.formattingSettings.mapBoundsCard.east.value !== 0 &&
+                this.formattingSettings.mapBoundsCard.west.value !== 0) {
+                
+                const bounds = L.latLngBounds(
+                    L.latLng(this.formattingSettings.mapBoundsCard.south.value, 
+                            this.formattingSettings.mapBoundsCard.west.value),
+                    L.latLng(this.formattingSettings.mapBoundsCard.north.value, 
+                            this.formattingSettings.mapBoundsCard.east.value)
+                );
+    
+                this.map.fitBounds(bounds);
+                if (this.formattingSettings.mapBoundsCard.zoom.value !== 0) {
+                    this.map.setZoom(this.formattingSettings.mapBoundsCard.zoom.value);
+                }
+            }
+        } else {
+            console.log('No persisted map bounds found in dataView');
         }
     }
 
-    /**
-     * Returns properties pane formatting model content hierarchies, properties and latest formatting values, Then populate properties pane.
-     * This method is called once every time we open properties pane or when the user edit any format property. 
-     */
+   
+    
+    private handleFilterChange() {
+        console.log('Handling filter change...');
+        // Voer hier de logica uit om de kaart of andere visualisaties bij te werken
+        this.updateVisualBasedOnFilters();
+    }
+
+    private updateVisualBasedOnFilters() {
+        // Logica om de visual bij te werken op basis van de huidige filters
+        console.log('Updating visual based on filters...');
+        // Bijvoorbeeld: herteken de punten op de kaart
+        this.drawPoints(this.lastDataView);
+        this.updateMarkerStyle();
+    }
+private async loadGeoJSONData(url: string) {
+    try {
+        const response = await fetch(url);
+        const geoJsonData = await response.json();
+        this.geoJSONLayer.loadGeoJSON(geoJsonData); // Pass the data to the external class
+        this.buildGeoJsonIndex();
+    } catch (error) {
+        console.error('Error loading GeoJSON:', error);
+    }
+}
+  
+    private buildGeoJsonIndex() {
+        this.geoJsonIndex.clear();
+        const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+        console.log('Opbouw Geojson index');
+        if (!geoJsonLayer) {
+            console.log('No GeoJSON layer available');
+            return;
+        }
+        geoJsonLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.Polygon) {
+                const bounds = layer.getBounds();
+                this.geoJsonIndex.insert({
+                    minX: bounds.getWest(),
+                    minY: bounds.getSouth(),
+                    maxX: bounds.getEast(),
+                    maxY: bounds.getNorth(),
+                    layer: layer
+                });
+            }
+        });
+        console.log('Geojsonlayer index succesvol');
+    }
+ 
+    private setupMapEventListeners() {
+        console.log('Setting up map event listeners');
+        
+        // Direct events zonder debounce
+        this.map.on('zoomend', () => {
+            console.log('Zoom event detected');
+            this.saveMapBounds();
+            this.updateSelectionBasedOnVisibleMarkers();
+        });
+    
+        this.map.on('moveend', () => {
+            console.log('Move event detected');
+            this.saveMapBounds();
+            this.updateSelectionBasedOnVisibleMarkers();
+        });
+    
+        console.log('Map event listeners setup complete');
+    }
+    
+    private saveMapBounds() {
+        if (!this.map || !this.formattingSettings?.mapBoundsCard) {
+            console.log('Map or settings not initialized');
+            return;
+        }
+    
+        const bounds = this.map.getBounds();
+        const zoom = this.map.getZoom();
+    
+        // Log current state before saving
+        console.log('Current map state:', {
+            north: bounds.getNorth(),
+            south: bounds.getSouth(),
+            east: bounds.getEast(),
+            west: bounds.getWest(),
+            zoom: zoom
+        });
+    
+        // Update the formatting settings
+        this.formattingSettings.mapBoundsCard.north.value = bounds.getNorth();
+        this.formattingSettings.mapBoundsCard.south.value = bounds.getSouth();
+        this.formattingSettings.mapBoundsCard.east.value = bounds.getEast();
+        this.formattingSettings.mapBoundsCard.west.value = bounds.getWest();
+        this.formattingSettings.mapBoundsCard.zoom.value = zoom;
+    
+        // Persist the properties
+        this.host.persistProperties({
+            merge: [{
+                objectName: 'mapBoundsCard',
+                properties: {
+                    north: bounds.getNorth(),
+                    south: bounds.getSouth(),
+                    east: bounds.getEast(),
+                    west: bounds.getWest(),
+                    zoom: zoom
+                },
+                selector: null
+            }]
+        });
+        
+        console.log('Map bounds saved:', {
+            inFormattingSettings: {
+                north: this.formattingSettings.mapBoundsCard.north.value,
+                south: this.formattingSettings.mapBoundsCard.south.value,
+                east: this.formattingSettings.mapBoundsCard.east.value,
+                west: this.formattingSettings.mapBoundsCard.west.value,
+                zoom: this.formattingSettings.mapBoundsCard.zoom.value
+            }
+        });
+    }
+
+    private updateSelectionBasedOnVisibleMarkers() {
+
+           // Check if formatting settings are initialized
+    if (!this.formattingSettings || !this.formattingSettings.zoomSelectionCard) {
+        console.log('Formatting settings not initialized yet, skipping selection update');
+        return;
+    }
+        const isZoomFilterActivated = this.formattingSettings.zoomSelectionCard.enableZoomSelection.value;
+        if (!isZoomFilterActivated) {
+            console.log('zoom setting niet geactiveerd',isZoomFilterActivated);
+            return; // Stop de functie als de checkbox niet is aangevinkt
+            
+        }
+    
+        const bounds = this.map.getBounds(); // Haal de huidige grenzen van het kaartvenster op
+        const visibleMarkers: powerbi.visuals.ISelectionId[] = [];
+        console.log('Updating selection based on zoom', bounds);
+    
+        // Wis de huidige selectie
+        this.selectionManager.clear();
+    
+        // Itereer door alle markers in de pointsLayer
+        this.selectedPointsLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.CircleMarker) {
+                const latLng = layer.getLatLng();
+                console.log('Checking marker at:', latLng);
+    
+                // Controleer of de marker binnen de huidige kaartgrenzen valt
+                if (bounds.contains(latLng)) {
+                    console.log('Marker is within bounds');
+    
+                    // Vind de rijindex op basis van de lat/lng
+                    const rowIndex = this.findRowIndexByLatLng(latLng.lat, latLng.lng);
+                    if (rowIndex !== -1) {
+                        console.log('Row index found:', rowIndex);
+    
+                        // Genereer een selectie-ID voor de rij
+                        const selectionId = this.host.createSelectionIdBuilder()
+                            .withTable(this.lastDataView.table, rowIndex)
+                            .createSelectionId();
+                        visibleMarkers.push(selectionId);
+                    } else {
+                        console.log('Row index not found for marker at:', latLng);
+                    }
+                } else {
+                    console.log('Marker is outside bounds');
+                }
+            }
+        });
+    
+        // Pas de selectie toe in Power BI
+        if (visibleMarkers.length > 0) {
+            console.log('Applying selection for', visibleMarkers.length, 'markers');
+            this.selectionManager.select(visibleMarkers, true); // Multi-select
+        } else {
+            console.log('No markers within bounds, clearing selection');
+            this.selectionManager.clear(); // Wis de selectie als er geen markers zichtbaar zijn
+        }
+    }
+    private drawPoints(dataView: powerbi.DataView): L.LatLng[] {
+        const markers: L.LatLng[] = [];
+        try {
+            // Clear existing points
+            this.pointsLayer.clearLayers();
+            this.selectedPointsLayer.clearLayers();
+            this.unselectedPointsLayer.clearLayers();
+            this.pointsLayer.setZIndex(200); // Punten op de voorgrond
+            this.selectedPointsLayer.setZIndex(200); // Geselecteerde punten op de voorgrond
+            this.unselectedPointsLayer.setZIndex(200); // Niet-geselecteerde punten op de voorgrond
+    
+    
+            // Check if data is available
+            if (!dataView.table?.rows?.length) {
+                console.log('No data to draw points');
+                return markers;
+            }
+    
+            console.log('Processing', dataView.table.rows.length, 'rows');
+            const initialStyle = {
+                fillColor: this.formattingSettings.markerStyleCard.markerColor.value.value,
+                color: this.formattingSettings.markerStyleCard.borderColor.value.value,
+                weight: this.formattingSettings.markerStyleCard.borderWidth.value,
+                opacity: this.formattingSettings.markerStyleCard.opacity.value / 100,
+                fillOpacity: this.formattingSettings.markerStyleCard.opacity.value / 100,
+                radius: this.formattingSettings.markerStyleCard.markerRadius.value
+            };
+            // Iterate through rows and draw markers
+            for (const [index, row] of dataView.table.rows.entries()) {
+                  
+                const lat = typeof row[0] === 'number' ? row[0] : parseFloat(row[0].toString());
+                const lng = typeof row[1] === 'number' ? row[1] : parseFloat(row[1].toString());
+    
+                if (this.isValidCoordinate(lat, lng)) {
+                    // Create a circle marker with default style
+                    const marker = L.circleMarker([lat, lng], initialStyle);
+    
+                    // Add event listeners for tooltips and selection
+                    const selectionId = this.host.createSelectionIdBuilder()
+                        .withTable(dataView.table, index)
+                        .createSelectionId();
+    
+                    marker.on('mousemove', (e: L.LeafletMouseEvent) => {
+                        const tooltipData = this.createTooltip(row, dataView);
+                        this.host.tooltipService.show({
+                            dataItems: tooltipData,
+                            identities: [selectionId],
+                            coordinates: [e.originalEvent.pageX, e.originalEvent.pageY],
+                            isTouchEvent: false
+                        });
+                    });
+    
+                    marker.on('mouseout', () => {
+                        this.host.tooltipService.hide({
+                            immediately: true,
+                            isTouchEvent: false
+                        });
+                    });
+    
+                    marker.on('click', () => {
+                        this.selectionManager.select(selectionId);
+                    });
+    
+                    // Add marker to the points layer
+                    this.pointsLayer.addLayer(marker);
+                    markers.push(L.latLng(lat, lng));
+                } else {
+                    console.log(`Invalid coordinate in row ${index}:`, { lat, lng });
+                }
+            }
+    
+            console.log('Points drawn:', markers.length);
+        } catch (error) {
+            console.error('Error in drawPoints:', error);
+        }
+        return markers;
+    }
+
+    private updateMarkerStyle() {
+        // Define the new marker style based on formatting settings
+        const newStyle = {
+            fillColor: this.formattingSettings.markerStyleCard.markerColor.value.value,
+            color: this.formattingSettings.markerStyleCard.borderColor.value.value,
+            weight: this.formattingSettings.markerStyleCard.borderWidth.value,
+            opacity: this.formattingSettings.markerStyleCard.opacity.value / 100,
+            fillOpacity: this.formattingSettings.markerStyleCard.opacity.value / 100,
+            radius: this.formattingSettings.markerStyleCard.markerRadius.value
+        };
+    
+        // Apply the new style to all markers in the points layer
+        this.pointsLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.CircleMarker) {
+                layer.setStyle(newStyle);
+            }
+        });
+    
+        console.log('Marker styles updated');
+    }
+    private applyGeoJSONFilter() {
+   
+        const totalPoints = this.pointsLayer.getLayers().length;
+        let processedPoints = 0;
+
+        const startTime = performance.now(); // Start de timer
+        
+        if (!this.formattingSettings?.geoJsonCard?.activateFilter?.value) {
+            return; // Stop de functie als de checkbox niet is aangevinkt
+        }
+      
+        const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+        if (!this.pointsLayer || !geoJsonLayer || !this.lastDataView) {
+            return;
+        }
+       
+        const selectionIds: powerbi.visuals.ISelectionId[] = [];
+    
+        // Stijl voor geselecteerde en niet-geselecteerde markers
+        const selectedStyle = {
+            fillColor: this.formattingSettings.markerStyleCard.markerColor.value.value,
+            radius: this.formattingSettings.markerStyleCard.markerRadius.value
+        };
+    
+        const unselectedStyle = {
+            fillColor: '#CCCCCC', // Lichtgrijs voor niet-geselecteerde markers
+            radius: this.formattingSettings.markerStyleCard.markerRadius.value - 2 // 2 punten kleiner
+        };
+    
+        // Leeg de selected en unselected layers
+    this.selectedPointsLayer.clearLayers();
+    this.unselectedPointsLayer.clearLayers();
+    
+        // Itereer door alle markers en pas de stijl aan op basis van de GeoJSON-filter
+        this.pointsLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.CircleMarker) {
+                const latLng = layer.getLatLng();
+                const isInside = this.isPointInGeoJSON(latLng.lat, latLng.lng);
+    
+                // Pas de stijl aan op basis van de filter
+                layer.setStyle(isInside ? selectedStyle : unselectedStyle);
+    
+                // Verplaats de marker naar de juiste laag
+                if (isInside) {
+                    this.selectedPointsLayer.addLayer(layer);
+                    this.unselectedPointsLayer.removeLayer(layer);
+                    const rowIndex = this.findRowIndexByLatLng(latLng.lat, latLng.lng);
+                    if (rowIndex !== -1) {
+                        const selectionId = this.host.createSelectionIdBuilder()
+                            .withTable(this.lastDataView.table, rowIndex)
+                            .createSelectionId();
+                        selectionIds.push(selectionId);}
+                } else {
+                    this.unselectedPointsLayer.addLayer(layer);
+                    this.selectedPointsLayer.removeLayer(layer);
+                }
+            }
+            processedPoints++;
+
+        });
+
+    
+        // Pas de selectie toe in Power BI
+        if (selectionIds.length > 0) {
+            this.selectionManager.select(selectionIds, true); // Multi-select
+        } else {
+            this.selectionManager.clear(); // Wis de selectie als er geen markers binnen de GeoJSON-laag zijn
+        }
+    
+    
+        const endTime = performance.now(); // Stop de timer
+        const executionTime = (endTime - startTime).toFixed(2); 
+        this.timerElement.innerText = `Uitvoeringstijd: ${executionTime} ms`;
+         console.log(`applyGeoJSONFilter uitgevoerd in ${executionTime} ms`);
+        console.log('GeoJSON filter applied');
+        console.log('PointsLayer markers:', this.pointsLayer.getLayers().length);
+        console.log('SelectedPointsLayer markers:', this.selectedPointsLayer.getLayers().length);
+        console.log('UnselectedPointsLayer markers:', this.unselectedPointsLayer.getLayers().length);
+    }
+
+    private resetGeoJSONFilter() {
+        // Reset the points to their original state
+        this.pointsLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.CircleMarker) {
+                // Reset the style of all markers
+                layer.setStyle({
+                    fillColor: this.formattingSettings.markerStyleCard.markerColor.value.value,
+                    radius: this.formattingSettings.markerStyleCard.markerRadius.value
+                });
+    
+                // Move all markers back to the main points layer
+                this.pointsLayer.addLayer(layer);
+                this.selectedPointsLayer.removeLayer(layer);
+                this.unselectedPointsLayer.removeLayer(layer);
+            }
+        });
+    
+        // Clear the selection in Power BI
+        this.selectionManager.clear();
+        console.log('GeoJSON filter reset and selection cleared');
+    }
+
+ 
+    private isValidCoordinate(lat: number, lng: number): boolean {
+        return !isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+    }
+
+    private removeGeoJSONLayer() {
+        if (this.geoJSONLayer) {
+            const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+            if (geoJsonLayer) {
+                this.map.removeLayer(geoJsonLayer); // Verwijder de GeoJSON-laag van de kaart
+                this.geoJsonIndex.clear(); // Maak de spatial index leeg
+                console.log('GeoJSON layer removed');
+            }
+        }
+    }
+    private isPointInGeoJSON(lat: number, lng: number): boolean {
+        const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+        if (!geoJsonLayer || !this.geoJsonIndex || this.geoJsonIndex.all().length === 0) {
+            return true; // No GeoJSON layer, consider all points as inside
+        }
+    
+        const point = { minX: lng, minY: lat, maxX: lng, maxY: lat };
+        const candidates = this.geoJsonIndex.search(point); // Search in the spatial index
+    
+        for (const candidate of candidates) {
+            if (candidate.layer instanceof L.Polygon) {
+                // Precise check with leaflet-pip
+                if (leafletPip.pointInLayer(L.latLng(lat, lng), L.layerGroup([candidate.layer])).length > 0) {
+                    return true; // The point is inside the polygon
+                }
+            }
+        }
+    
+        return false; // The point is not inside any polygon
+    }
+   
+    private findRowIndexByLatLng(lat: number, lng: number): number {
+        if (!this.lastDataView?.table?.rows) return -1;
+    
+        for (let i = 0; i < this.lastDataView.table.rows.length; i++) {
+            const row = this.lastDataView.table.rows[i];
+            const rowLat = parseFloat(row[0].toString());
+            const rowLng = parseFloat(row[1].toString());
+    
+            if (rowLat === lat && rowLng === lng) {
+                return i;
+            }
+        }
+    
+        return -1;
+    }
+
+    private createTooltip(row: powerbi.DataViewTableRow, dataView: powerbi.DataView): VisualTooltipDataItem[] {
+        const tooltipData: VisualTooltipDataItem[] = [];
+
+        if (!dataView.table?.columns || !row) {
+            return tooltipData;
+        }
+
+        dataView.table.columns.forEach((column, index) => {
+            if (column.roles && (column.roles.tooltipFields || column.roles.latitude || column.roles.longitude)) {
+                const value = row[index];
+                tooltipData.push({
+                    header: column.displayName,
+                    displayName: column.displayName,
+                    value: value?.toString() ?? ''
+                });
+            }
+        });
+
+        return tooltipData;
+    }
+
     public getFormattingModel(): powerbi.visuals.FormattingModel {
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
+    }
+
+  
+   
+
+    public destroy(): void {
+        console.log('Visual destroy called');
+
+
+    
+        // Sla de kaartgrenzen en zoomniveau op
+     
+        this.saveMapBounds();
+
+        // Clean up the map and layers
+        if (this.map) {
+            this.map.remove();
+        }
+
+        if (this.pointsLayer) {
+            this.pointsLayer.clearLayers();
+        }
+
+        if (this.selectedPointsLayer) {
+            this.selectedPointsLayer.clearLayers();
+        }
+
+        if (this.unselectedPointsLayer) {
+            this.unselectedPointsLayer.clearLayers();
+        }
+
+        if (this.geoJSONLayer) {
+
+            const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+            if (!geoJsonLayer) {
+                console.log('No GeoJSON layer available');
+                return;
+            }
+            geoJsonLayer.clearLayers();
+        }
     }
 }

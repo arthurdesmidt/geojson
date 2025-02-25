@@ -68,6 +68,10 @@
                     "licenseKey": {
                         "displayName": "License Key",
                         "type": { "text": true }
+                    },
+                    "validateButton": {
+                        "displayName": "Validate License",
+                        "type": { "bool": true }
                     }
                 }
         },
@@ -171,7 +175,20 @@
                 }
 
             }
-        }  },
+        },
+        "reportSettings": {
+            "displayName": "Report Settings",
+            "properties": {
+                "sharedLicenseKey": {
+                    "displayName": "Shared License Key",
+                    "type": { 
+                        "text": true 
+                    }
+                }
+            }
+        }
+    
+    },
     "privileges": [{
         "name": "WebAccess",
         "essential": true,
@@ -181,7 +198,11 @@
             "https://*.opentopomap.org",
             "https://*.openstreetmap.org",
             "https://*.arcgisonline.com",
-            "https://*.stadiamaps.com"
+            "https://*.stadiamaps.com",
+            "https://*.bimappy.nl",
+            "https://*.bimappy.com",
+            "https://bimappy.nl",
+            "https://bimappy.com"
         ]
     }]
     

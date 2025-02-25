@@ -1,83 +1,239 @@
-/*
- *  Power BI Visualizations
- *
- *  Copyright (c) Microsoft Corporation
- *  All rights reserved.
- *  MIT License
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the ""Software""), to deal
- *  in the Software without restriction, including without limitation the rights
- *  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- *  copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- *  THE SOFTWARE.
- */
-
-"use strict";
-
 import { formattingSettings } from "powerbi-visuals-utils-formattingmodel";
+import powerbi from "powerbi-visuals-api";
 
-import FormattingSettingsCard = formattingSettings.SimpleCard;
-import FormattingSettingsSlice = formattingSettings.Slice;
-import FormattingSettingsModel = formattingSettings.Model;
-
-/**
- * Data Point Formatting Card
- */
-class DataPointCardSettings extends FormattingSettingsCard {
-    defaultColor = new formattingSettings.ColorPicker({
-        name: "defaultColor",
-        displayName: "Default color",
-        value: { value: "" }
+class GeoJsonCard extends formattingSettings.SimpleCard {
+    geoJsonUrl = new formattingSettings.TextInput({
+        name: "geoJsonUrl",
+        displayName: "GeoJSON URL",
+        description: "Enter URL to GeoJSON file",
+        value: "",
+        placeholder: "Enter GeoJSON URL"
     });
 
-    showAllDataPoints = new formattingSettings.ToggleSwitch({
-        name: "showAllDataPoints",
-        displayName: "Show all",
-        value: true
+    layerColor = new formattingSettings.ColorPicker({
+        name: "layerColor",
+        displayName: "Layer Color",
+        value: { value: "#0000FF" }
     });
 
-    fill = new formattingSettings.ColorPicker({
-        name: "fill",
-        displayName: "Fill",
-        value: { value: "" }
+    opacity = new formattingSettings.NumUpDown({
+        name: "opacity",
+        displayName: "Layer Opacity",
+        value: 70,
+        options: {
+            minValue: {
+                type: powerbi.visuals.ValidatorType.Min,
+                value: 0
+            },
+            maxValue: {
+                type: powerbi.visuals.ValidatorType.Max,
+                value: 100
+            }
+        }
+    });
+    activateFilter = new formattingSettings.ToggleSwitch({
+        name: "activateFilter",
+        displayName: "Activate Filter",
+        value: false
     });
 
-    fillRule = new formattingSettings.ColorPicker({
-        name: "fillRule",
-        displayName: "Color saturation",
-        value: { value: "" }
-    });
-
-    fontSize = new formattingSettings.NumUpDown({
-        name: "fontSize",
-        displayName: "Text Size",
-        value: 12
-    });
-
-    name: string = "dataPoint";
-    displayName: string = "Data colors";
-    slices: Array<FormattingSettingsSlice> = [this.defaultColor, this.showAllDataPoints, this.fill, this.fillRule, this.fontSize];
+    name: string = "geoJsonCard";
+    displayName: string = "GeoJSON Filter Layer";
+    slices = [this.geoJsonUrl, this.layerColor, this.opacity, this.activateFilter];
 }
 
-/**
-* visual settings model class
-*
-*/
-export class VisualFormattingSettingsModel extends FormattingSettingsModel {
-    // Create formatting settings model formatting cards
-    dataPointCard = new DataPointCardSettings();
+class MarkerStyleCard extends formattingSettings.SimpleCard {
+    markerRadius = new formattingSettings.NumUpDown({
+        name: "markerRadius",
+        displayName: "Marker Size",
+        value: 8,
+        options: {
+            minValue: {
+                type: powerbi.visuals.ValidatorType.Min,
+                value: 1
+            },
+            maxValue: {
+                type: powerbi.visuals.ValidatorType.Max,
+                value: 20
+            }
+        }
+    });
 
-    cards = [this.dataPointCard];
+    markerColor = new formattingSettings.ColorPicker({
+        name: "markerColor",
+        displayName: "Fill Color",
+        value: { value: "#ff7800" }
+    });
+
+    borderColor = new formattingSettings.ColorPicker({
+        name: "borderColor",
+        displayName: "Border Color",
+        value: { value: "#000000" }
+    });
+
+    borderWidth = new formattingSettings.NumUpDown({
+        name: "borderWidth",
+        displayName: "Border Width",
+        value: 2,
+        options: {
+            minValue: {
+                type: powerbi.visuals.ValidatorType.Min,
+                value: 0
+            },
+            maxValue: {
+                type: powerbi.visuals.ValidatorType.Max,
+                value: 5
+            }
+        }
+    });
+
+    opacity = new formattingSettings.NumUpDown({
+        name: "opacity",
+        displayName: "Opacity",
+        value: 80,
+        options: {
+            minValue: {
+                type: powerbi.visuals.ValidatorType.Min,
+                value: 0
+            },
+            maxValue: {
+                type: powerbi.visuals.ValidatorType.Max,
+                value: 100
+            }
+        }
+    });
+
+    name: string = "markerStyleCard";
+    displayName: string = "Marker Style";
+    slices = [this.markerRadius, this.markerColor, this.borderColor, this.borderWidth, this.opacity];
+}
+
+class MapBoundsCard extends formattingSettings.SimpleCard {
+    north = new formattingSettings.NumUpDown({
+        name: "north",
+        displayName: "North",
+        value: 0,
+        visible: true
+    });
+
+    south = new formattingSettings.NumUpDown({
+        name: "south",
+        displayName: "South",
+        value: 0,
+        visible: true
+    });
+
+    east = new formattingSettings.NumUpDown({
+        name: "east",
+        displayName: "East",
+        value: 0,
+        visible: true
+    });
+
+    west = new formattingSettings.NumUpDown({
+        name: "west",
+        displayName: "West",
+        value: 0,
+        visible: true
+    });
+
+    zoom = new formattingSettings.NumUpDown({
+        name: "zoom",
+        displayName: "Zoom",
+        value: 0,
+        visible: true
+    });
+
+    name: string = "mapBoundsCard";
+    displayName: string = "Map Bounds";
+    slices = [this.north, this.south, this.east, this.west, this.zoom];
+}
+class ZoomSelectionCard extends formattingSettings.SimpleCard {
+    enableZoomSelection = new formattingSettings.ToggleSwitch({
+        name: "enableZoomSelection",
+        displayName: "Enable Selection Based on Zoom",
+        description: "Enable or disable selection based on visible markers during zoom/pan.",
+        value: false // Standaard uitgeschakeld
+    });
+
+    name: string = "zoomSelectionCard";
+    displayName: string = "Zoom Selection Settings";
+    slices = [this.enableZoomSelection];
+}
+
+class LicenseCard extends formattingSettings.SimpleCard {
+    licenseKey = new formattingSettings.TextInput({
+        name: "licenseKey",
+        displayName: "License Key",
+        description: "Enter your license key",
+        value: "",
+        placeholder: "Enter license key here"
+    });
+
+    validateButton = new formattingSettings.ToggleSwitch({
+        name: "validateButton",
+        displayName: "Validate License",
+        description: "Turn on to validate your license key",
+        value: false
+    });
+  
+    name: string = "licenseCard";
+    displayName: string = "License Settings";
+    slices = [this.licenseKey, this.validateButton];
+}
+
+class MapSettingsCard extends formattingSettings.SimpleCard {
+    zoomLevel = new formattingSettings.NumUpDown({
+        name: "zoomLevel",
+        displayName: "Zoom Level",
+        value: 0,
+        options: {
+            minValue: {
+                type: powerbi.visuals.ValidatorType.Min,
+                value: 0
+            },
+            maxValue: {
+                type: powerbi.visuals.ValidatorType.Max,
+                value: 20
+            }
+        }
+    });
+
+    name: string = "mapSettings";
+    displayName: string = "Map Settings";
+    slices = [this.zoomLevel];
+}
+class ReportSettings extends formattingSettings.SimpleCard {
+    sharedLicenseKey = new formattingSettings.TextInput({
+        name: "sharedLicenseKey",
+        displayName: "Shared License Key",
+        value: "",
+        placeholder: "",
+        description: ""
+    });
+
+    constructor() {
+        super();
+        this.visible = false; // Hide the card
+        this.sharedLicenseKey.visible = false; // Hide the input
+    }
+
+    name: string = "reportSettings";
+    displayName: string = "Report Settings";
+    slices = [this.sharedLicenseKey];
+}
+// Hide the report settings card from the formatting pane by setting visible to false
+const reportSettingsCard = new ReportSettings();
+reportSettingsCard.visible = false;
+export class VisualFormattingSettingsModel extends formattingSettings.Model {
+    mapSettingsCard = new MapSettingsCard();
+    reportSettings = new ReportSettings();
+    markerStyleCard = new MarkerStyleCard();
+    geoJsonCard = new GeoJsonCard();
+    mapBoundsCard = new MapBoundsCard(); 
+    zoomSelectionCard = new ZoomSelectionCard(); 
+    licenseCard = new LicenseCard(); // Voeg de nieuwe card toe
+
+    cards = [this.geoJsonCard, this.zoomSelectionCard, this.markerStyleCard,  this.mapBoundsCard, this.mapSettingsCard, this.licenseCard, this.reportSettings];
+    
 }
