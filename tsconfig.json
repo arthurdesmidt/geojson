@@ -5,6 +5,8 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "declaration": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
     "allowJs": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -12,7 +14,6 @@
     "strict": true,
     "noImplicitAny": false,
     "strictNullChecks": false,
-    "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "typeRoots": [

@@ -203,7 +203,7 @@ class MapSettingsCard extends formattingSettings.SimpleCard {
     displayName: string = "Map Settings";
     slices = [this.zoomLevel];
 }
-class ReportSettings extends formattingSettings.SimpleCard {
+export class ReportSettings extends formattingSettings.SimpleCard {
     sharedLicenseKey = new formattingSettings.TextInput({
         name: "sharedLicenseKey",
         displayName: "Shared License Key",
@@ -214,8 +214,8 @@ class ReportSettings extends formattingSettings.SimpleCard {
 
     constructor() {
         super();
-        this.visible = false; // Hide the card
-        this.sharedLicenseKey.visible = false; // Hide the input
+        this.visible = true; // Hide the card
+        this.sharedLicenseKey.visible = true; // Hide the input
     }
 
     name: string = "reportSettings";
@@ -234,6 +234,6 @@ export class VisualFormattingSettingsModel extends formattingSettings.Model {
     zoomSelectionCard = new ZoomSelectionCard(); 
     licenseCard = new LicenseCard(); // Voeg de nieuwe card toe
 
-    cards = [this.geoJsonCard, this.zoomSelectionCard, this.markerStyleCard,  this.mapBoundsCard, this.mapSettingsCard, this.licenseCard, this.reportSettings];
+    cards = [this.geoJsonCard, this.zoomSelectionCard, this.markerStyleCard, this.licenseCard];
     
 }

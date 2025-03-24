@@ -176,17 +176,19 @@
 
             }
         },
-        "reportSettings": {
+       "reportSettings": {
             "displayName": "Report Settings",
+            "description": "Settings shared across all instances of the visual",
             "properties": {
                 "sharedLicenseKey": {
                     "displayName": "Shared License Key",
+                    "description": "License key shared across report",
                     "type": { 
                         "text": true 
                     }
                 }
             }
-        }
+}
     
     },
     "privileges": [{

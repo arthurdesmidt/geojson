@@ -4,7 +4,7 @@ import powerbi from "powerbi-visuals-api";
 import * as L from "leaflet";
 import * as leafletPip from '@mapbox/leaflet-pip';
 import { FormattingSettingsService } from "powerbi-visuals-utils-formattingmodel";
-import { VisualFormattingSettingsModel } from "./settings";
+import { VisualFormattingSettingsModel, ReportSettings } from "./settings";
 import RBush from 'rbush';
 import { GeoJSONLayer} from './geoJSONLayer';
 import { isValidLicense } from './licenseKeys';
@@ -25,6 +25,7 @@ export class Visual implements IVisual {
     private geoJSONLayer: GeoJSONLayer;
     private formattingSettings: VisualFormattingSettingsModel;
     private formattingSettingsService: FormattingSettingsService;
+   
     private host: powerbi.extensibility.visual.IVisualHost;
     private selectionManager: ISelectionManager;
     private pointsLayer: L.LayerGroup; // Layer for all points
@@ -95,6 +96,10 @@ export class Visual implements IVisual {
         
         // Initialize default formatting settings
         this.formattingSettings = new VisualFormattingSettingsModel();
+
+        if (!this.formattingSettings.reportSettings) {
+            this.formattingSettings.reportSettings = new ReportSettings();
+        }
         
         // Add visibility change listener
         document.addEventListener('visibilitychange', () => {
@@ -238,14 +243,24 @@ export class Visual implements IVisual {
         // Initialiseer van opgeslagen instellingen - deze moet vóór de andere checks
         this.initializeFromPersistedSettings(currentDataView);
 
-        this.checkStoredLicenseKey();
-         // Check for shared license key first
-        const sharedKey = this.formattingSettings.reportSettings.sharedLicenseKey.value;
-        if (sharedKey && !this.licenseValidated) {
-            console.log('Found shared license key, applying to local settings');
-            this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+
+        const sharedKey = this.getReportLevelLicenseKey(this.lastDataView);
+    if (sharedKey) {
+        console.log('Found shared license key at report level:', sharedKey);
+        // Update local settings
+        this.formattingSettings.reportSettings.sharedLicenseKey.value = sharedKey;
+        this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+        
+        // Validate if needed
+        if (!this.licenseValidated) {
             this.validateLicense();
-       }
+        }
+    } else {
+        // Fall back to other methods
+        this.initializeFromPersistedSettings(this.lastDataView);
+        this.checkStoredLicenseKey();
+    }
+    
 
         // Check if validate button was pressed
         // Check for validate button state change
@@ -424,6 +439,15 @@ export class Visual implements IVisual {
         }
     }
     
+    private getReportLevelLicenseKey(dataView: powerbi.DataView): string | null {
+        if (!dataView?.metadata?.objects?.reportSettings?.sharedLicenseKey) {
+            return null;
+        }
+        
+        const key = dataView.metadata.objects.reportSettings.sharedLicenseKey as string;
+        return key || null;
+    }
+
     private enableFullFunctionality() {
         console.log('Enabling full functionality');
         
@@ -497,41 +521,36 @@ export class Visual implements IVisual {
     }
     
     private persistSharedLicenseKey(licenseKey: string) {
-        console.log('Attempting to persist shared license key:', licenseKey);
+        console.log('Persisting shared license key:', licenseKey);
+        
+        if (!licenseKey) {
+            console.log('Empty license key, not persisting');
+            return;
+        }
+        
+        // Ensure reportSettings exists
+        if (!this.formattingSettings.reportSettings) {
+            console.log('Report settings not initialized');
+            return;
+        }
+        
+        // Update in memory
+        this.formattingSettings.reportSettings.sharedLicenseKey.value = licenseKey;
         
         try {
-            // Update both the formatting settings and persist to report level
-            if (this.formattingSettings?.reportSettings) {
-                console.log('Updating reportSettings in formatting settings');
-                this.formattingSettings.reportSettings.sharedLicenseKey.value = licenseKey;
-            }
-    
-            // Persist to report level using host
+            // Persist at report level with appropriate scope
             this.host.persistProperties({
-                merge: [
-                    {
-                        objectName: 'reportSettings',
-                        properties: {
-                            sharedLicenseKey: licenseKey
-                        },
-                        selector: null
+                merge: [{
+                    objectName: 'reportSettings',
+                    properties: { 
+                        sharedLicenseKey: licenseKey 
                     },
-                    {
-                        objectName: 'licenseCard',
-                        properties: {
-                            licenseKey: licenseKey
-                        },
-                        selector: null
-                    }
-                ]
+                    selector: null  // null selector for report-level persistence
+                }]
             });
-    
-            console.log('License key persisted successfully:', {
-                reportSettingsKey: this.formattingSettings?.reportSettings?.sharedLicenseKey?.value,
-                licenseCardKey: this.formattingSettings?.licenseCard?.licenseKey?.value
-            });
+            console.log('Successfully persisted sharedLicenseKey to report level');
         } catch (error) {
-            console.error('Error persisting license key:', error);
+            console.error('Error persisting properties:', error);
         }
     }
     
@@ -540,29 +559,55 @@ export class Visual implements IVisual {
         console.log('Initializing from persisted settings');
         
         const objects = dataView.metadata?.objects;
+        console.log('Full objects:', JSON.stringify(objects));
+        
         if (!objects) {
             console.log('No persisted objects found');
             return;
         }
     
-        // Log alle gevonden objecten
-        console.log('Found persisted objects:', objects);
-    
-        // Check reportSettings
+        // Check licenseCard first
+        if (objects.licenseCard?.licenseKey) {
+            const licenseKey = objects.licenseCard.licenseKey as string;
+            console.log('Found license key in licenseCard:', licenseKey);
+            
+            // Update local settings
+            if (this.formattingSettings.licenseCard) {
+                this.formattingSettings.licenseCard.licenseKey.value = licenseKey;
+            }
+            
+            // Also save to reportSettings for sharing
+            if (this.formattingSettings.reportSettings) {
+                this.formattingSettings.reportSettings.sharedLicenseKey.value = licenseKey;
+                
+                // Persist to reportSettings
+                this.persistSharedLicenseKey(licenseKey);
+            }
+            
+            // Validate if not already validated
+            if (!this.licenseValidated) {
+                this.validateLicense();
+            }
+        }
+        
+        // Then also check reportSettings (for backwards compatibility)
         if (objects.reportSettings?.sharedLicenseKey) {
             const sharedKey = objects.reportSettings.sharedLicenseKey as string;
-            console.log('Found shared key in reportSettings:', objects.reportSettings.sharedLicenseKey);
+            console.log('Found shared key in reportSettings:', sharedKey);
             
-            // Update both locations
-            if (this.formattingSettings.reportSettings) {
+            // Update both locations if not already set
+            if (this.formattingSettings.reportSettings && 
+                !this.formattingSettings.reportSettings.sharedLicenseKey.value) {
                 this.formattingSettings.reportSettings.sharedLicenseKey.value = sharedKey;
             }
-            if (this.formattingSettings.licenseCard) {
+            
+            if (this.formattingSettings.licenseCard && 
+                !this.formattingSettings.licenseCard.licenseKey.value) {
                 this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
             }
-    
-            // Validate if we have a key
-            if (objects.reportSettings.sharedLicenseKey && !this.licenseValidated) {
+            
+            // Validate if not already validated and we haven't already done so above
+            if (!this.licenseValidated) {
                 this.validateLicense();
             }
         }
@@ -570,16 +615,27 @@ export class Visual implements IVisual {
     
     private checkStoredLicenseKey() {
         console.log('Checking stored license information:');
-        console.log('Formatting settings:', this.formattingSettings);
         
-        if (this.formattingSettings?.reportSettings) {
-            console.log('Report settings shared key:', 
-                this.formattingSettings.reportSettings.sharedLicenseKey.value);
+        // First check reportSettings (which should be shared across pages)
+        if (this.formattingSettings?.reportSettings?.sharedLicenseKey?.value) {
+            const sharedKey = this.formattingSettings.reportSettings.sharedLicenseKey.value;
+            console.log('Found shared license key:', sharedKey);
+            
+            // Apply to local license settings
+            if (this.formattingSettings.licenseCard) {
+                this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+                // Validate immediately if not already validated
+                if (!this.licenseValidated) {
+                    this.validateLicense();
+                }
+            }
         }
         
-        if (this.formattingSettings?.licenseCard) {
-            console.log('License card key:', 
-                this.formattingSettings.licenseCard.licenseKey.value);
+        // Then check local license card (this page only)
+        else if (this.formattingSettings?.licenseCard?.licenseKey?.value) {
+            console.log('No shared key found, but local license exists');
+            // If a local license exists but no shared one, persist it to share
+            this.persistSharedLicenseKey(this.formattingSettings.licenseCard.licenseKey.value);
         }
     }
     
