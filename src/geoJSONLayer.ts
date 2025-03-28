@@ -12,19 +12,24 @@ export class GeoJSONLayer {
         }
     }
 
-    // Load GeoJSON data and add it to the map
     loadGeoJSON(data: any) {
         if (this.geoJSONLayer) {
             // Remove the existing layer if it exists
             this.map.removeLayer(this.geoJSONLayer);
             console.log('geojsonlaag verwijderd')
         }
-
-        // Add the new GeoJSON layer to the map
+    
+        // Add the new GeoJSON layer to the map with explicit z-index
         this.geoJSONLayer = L.geoJSON(data, {
-            style: this.getStyle()
-          
+            style: this.getStyle(),
+            pane: 'overlayPane' // Use the standard overlay pane
         }).addTo(this.map);
+        
+        // Ensure GeoJSON layer has lower z-index than markers
+        if (this.geoJSONLayer) {
+            this.geoJSONLayer.setZIndex(100); // Lower z-index for GeoJSON
+        }
+        
         console.log('geojsonlaag toegevoegd')
     }
 

@@ -1,4 +1,13 @@
 {
+  "name": "bimappy-geojson",
+  "version": "1.0.0.0",
+  "description": "Your visualization description",
+  "scripts": {
+    "pbiviz": "pbiviz",
+    "start": "pbiviz start",
+    "package": "pbiviz package",
+    "lint": "npx eslint . --ext .js,.jsx,.ts,.tsx"
+  },
   "dependencies": {
     "@mapbox/leaflet-pip": "^1.1.0",
     "@turf/turf": "^7.2.0",
@@ -14,7 +23,11 @@
   "devDependencies": {
     "@types/leaflet": "^1.7.9",
     "@types/leaflet.markercluster": "^1.5.5",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "eslint": "^9.23.0",
+    "eslint-plugin-powerbi-visuals": "^1.0.0",
     "ts-loader": "9.4.1",
-    "typescript": "4.9.3"
+    "typescript": "^4.9.3"
   }
 }

@@ -235,5 +235,18 @@ export class VisualFormattingSettingsModel extends formattingSettings.Model {
     licenseCard = new LicenseCard(); // Voeg de nieuwe card toe
 
     cards = [this.geoJsonCard, this.zoomSelectionCard, this.markerStyleCard, this.licenseCard];
+
+    constructor() {
+        super();
+        
+        // Ensure these settings are kept available in code but hidden from UI
+        this.mapBoundsCard.visible = false;
+        this.reportSettings.visible = false;
+        
+        // Hide the license key from other report users if needed
+        // (only the report creator should be able to see/set it)
+        // Uncomment if you want this behavior:
+        // this.licenseCard.licenseKey.suppressFormatPainterCopy = true;
+    }
     
 }

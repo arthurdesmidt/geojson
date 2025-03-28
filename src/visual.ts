@@ -25,7 +25,7 @@ export class Visual implements IVisual {
     private geoJSONLayer: GeoJSONLayer;
     private formattingSettings: VisualFormattingSettingsModel;
     private formattingSettingsService: FormattingSettingsService;
-   
+    private recordWarningElement: HTMLElement;
     private host: powerbi.extensibility.visual.IVisualHost;
     private selectionManager: ISelectionManager;
     private pointsLayer: L.LayerGroup; // Layer for all points
@@ -36,8 +36,8 @@ export class Visual implements IVisual {
     private layerControl: L.Control.Layers;
     private timerElement: HTMLElement;
     private geoJsonIndex = new RBush();
-    private currentGeoJsonColor: string;
-    private currentGeoJsonOpacity: number;
+    private currentGeoJsonColor: string = '';
+    private currentGeoJsonOpacity: number = 0.5;
     private currentGeoJsonUrl: string = '';
     private previousFilterState: boolean = false;
     private progressElement: HTMLElement;
@@ -48,11 +48,11 @@ export class Visual implements IVisual {
     private isFirstLoad: boolean = true;
     private wasHidden: boolean = false;
     private previousDataLength: number = 0;
-    previousMarkerColor: string;
-    previousBorderColor: string;
-    previousBorderWidth: number;
-    previousOpacity: number;
-    previousMarkerRadius: number;
+    previousMarkerColor: string = '';
+    previousBorderColor: string = '';
+    previousBorderWidth: number = 0;
+    previousOpacity: number = 0;
+    previousMarkerRadius: number = 0;
     private licenseValidated: boolean = false;
    
     constructor(options: VisualConstructorOptions) {
@@ -86,9 +86,25 @@ export class Visual implements IVisual {
         this.timerElement.style.display = 'none'; // Hide initially, show only when needed
         this.target.appendChild(this.timerElement);
     
+        this.recordWarningElement = document.createElement('div');
+this.recordWarningElement.style.position = 'absolute';
+this.recordWarningElement.style.top = '10px';
+this.recordWarningElement.style.left = '50px'; // Position to the left of layer control
+this.recordWarningElement.style.zIndex = '1000';
+this.recordWarningElement.style.backgroundColor = '#f8d7da'; // Light red background
+this.recordWarningElement.style.color = '#721c24'; // Dark red text
+this.recordWarningElement.style.padding = '8px 12px';
+this.recordWarningElement.style.border = '1px solid #f5c6cb';
+this.recordWarningElement.style.borderRadius = '4px';
+this.recordWarningElement.style.fontWeight = 'bold';
+this.recordWarningElement.style.display = 'none'; // Hide initially
+this.recordWarningElement.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+this.recordWarningElement.setAttribute('role', 'alert'); // For accessibility
+this.recordWarningElement.innerText = '> 30,000 records. Use filters to reduce selection.';
+this.target.appendChild(this.recordWarningElement);
+
         // Initialize selection manager
         this.selectionManager = this.host.createSelectionManager();
-        console.log('Selection manager initialized');
     
         // Initialize formatting settings service
         this.formattingSettingsService = new FormattingSettingsService();
@@ -111,7 +127,7 @@ export class Visual implements IVisual {
     
         try {
             // Initialize the Leaflet map
-            console.log('Initializing map...');
+        
             this.map = L.map(this.target, {
                 center: [52.505, 4.89], // Default center (Amsterdam)
                 zoom: 11, // Default zoom level
@@ -125,7 +141,7 @@ export class Visual implements IVisual {
                 attribution: '© OpenStreetMap contributors'
             }).addTo(this.map);
             
-            console.log('Base tile layer added');
+         
     
             // Initialize the GeoJSONLayer
             this.geoJSONLayer = new GeoJSONLayer(this.map);
@@ -200,7 +216,6 @@ export class Visual implements IVisual {
             
             // Show default license warning
             this.showLicenseWarning();
-            
             console.log('Visual constructor completed successfully');
         } catch (error) {
             console.error('Error initializing visual:', error);
@@ -228,7 +243,7 @@ export class Visual implements IVisual {
         // Save the last data view
         const currentDataView = options.dataViews[0];
         this.lastDataView = currentDataView;
-    
+        this.checkRecordCount();
         // Update formatting settings first
         this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
             VisualFormattingSettingsModel,
@@ -314,21 +329,27 @@ export class Visual implements IVisual {
         const urlChanged = geoJsonUrl !== this.currentGeoJsonUrl;
         
         // Handle GeoJSON updates if URL changed
-        if (this.lastDataView) {
-            if (!geoJsonUrl || geoJsonUrl === '') {
-                console.log('GeoJSON URL removed or reset, removing GeoJSON layer...');
-                console.log('GeoJSON URL is empty, disabling filter...');
-                this.formattingSettings.geoJsonCard.activateFilter.visible = false;
-                this.removeGeoJSONLayer();
-                this.currentGeoJsonUrl = ''; // Reset de huidige URL
-            } else if (urlChanged) {
-                console.log('GeoJSON URL changed:', geoJsonUrl);
-                this.currentGeoJsonUrl = geoJsonUrl;
-                this.loadGeoJSONData(geoJsonUrl);
-                this.formattingSettings.geoJsonCard.activateFilter.visible = true;
-                console.log('einde GeoJSON URL changed'); 
+      
+            if (this.lastDataView) {
+                if (!geoJsonUrl || geoJsonUrl === '') {
+                    console.log('GeoJSON URL removed or reset, removing GeoJSON layer...');
+                    console.log('GeoJSON URL is empty, disabling filter...');
+                    this.formattingSettings.geoJsonCard.activateFilter.visible = false;
+                    this.removeGeoJSONLayer();
+                    this.currentGeoJsonUrl = ''; // Reset the current URL
+                } else if (urlChanged) {
+                    console.log('GeoJSON URL changed:', geoJsonUrl);
+                    // Validate and update only if valid
+                    if (this.validateGeoJsonUrl(geoJsonUrl)) {
+                        this.currentGeoJsonUrl = geoJsonUrl;
+                        this.loadGeoJSONData(geoJsonUrl);
+                        this.formattingSettings.geoJsonCard.activateFilter.visible = true;
+                    } else {
+                        // If URL is invalid, reset the URL in the formatting settings
+                        this.formattingSettings.geoJsonCard.geoJsonUrl.value = this.currentGeoJsonUrl;
+                    }
+                }
             }
-        }
     
         console.log('geojsonlaag settings kleur en opacity'); 
         const GeoJsonColor = this.formattingSettings.geoJsonCard.layerColor.value.value;
@@ -402,26 +423,42 @@ export class Visual implements IVisual {
 
     }
 
+    private checkRecordCount() {
+        if (!this.lastDataView?.table?.rows) return;
+        
+        const rowCount = this.lastDataView.table.rows.length;
+        
+        if (rowCount >= 30000) {
+            this.recordWarningElement.style.display = 'block';
+        } else {
+            this.recordWarningElement.style.display = 'none';
+        }
+    }
+
     private validateLicense() {
         console.log('Validate license called');
-    
+        
         if (!this.formattingSettings?.licenseCard) {
             console.error('No formatting settings available');
             return;
         }
-    
+        
         const licenseKey = this.formattingSettings.licenseCard.licenseKey.value;
         console.log('Current license key:', licenseKey);
-    
+        
         if (!licenseKey) {
             console.log('No license key provided');
             this.showLicenseWarning();
             return;
         }
-    
-
         
-    
+        // Check if the license is already validated with the same key to avoid 
+        // showing the message again on map interactions
+        if (this.licenseValidated && isValidLicense(licenseKey)) {
+            console.log('License already validated, skipping message');
+            return;
+        }
+        
         if (isValidLicense(licenseKey)) {
             console.log('License valid, enabling functionality');
             this.licenseValidated = true;
@@ -431,7 +468,9 @@ export class Visual implements IVisual {
             
             // Remove watermark and show success
             this.enableFullFunctionality();
-            this.showLicenseSuccess();
+            
+            // Only show success message when the license is newly validated
+            this.showLicenseMessage('License validated successfully!', 'success');
         } else {
             console.log('License invalid');
             this.licenseValidated = false;
@@ -439,6 +478,61 @@ export class Visual implements IVisual {
         }
     }
     
+
+    private showLicenseWarning() {
+        console.log('Showing license warning');
+        
+        // Remove any existing watermark first
+        const existingWatermark = this.target.querySelector('.license-watermark');
+        if (existingWatermark) {
+            existingWatermark.remove();
+        }
+    
+        // Create a container for the watermark
+        const watermarkContainer = document.createElement('div');
+        watermarkContainer.className = 'license-watermark';
+        watermarkContainer.style.position = 'absolute';
+        watermarkContainer.style.bottom = '10px';
+        watermarkContainer.style.left = '50%';
+        watermarkContainer.style.transform = 'translateX(-50%)';
+        watermarkContainer.style.zIndex = '1000';
+        watermarkContainer.style.display = 'flex';
+        watermarkContainer.style.alignItems = 'center';
+        watermarkContainer.style.textDecoration = 'none';
+        
+        // Create the logo image
+        const logo = document.createElement('img');
+        logo.src = 'data:image/png;base64,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';
+        logo.style.height = '38px'; // 28pt font size plus 5px padding top and bottom
+        logo.style.marginRight = '10px';
+        logo.style.opacity = '0.5'; // Semi-transparent
+        
+        // Create the text element
+        const text = document.createElement('span');
+        text.style.color = 'rgba(0, 0, 0, 0.5)';
+        text.style.fontSize = '28px';
+        text.innerText = 'BIMappy Unlicensed';
+        
+        // Create a link that wraps everything
+        const link = document.createElement('a');
+        link.href = 'https://www.bimappy.nl';
+        link.target = '_blank';
+        link.style.display = 'flex';
+        link.style.alignItems = 'center';
+        link.style.textDecoration = 'none';
+        
+        // Assemble the elements
+        link.appendChild(logo);
+        link.appendChild(text);
+        watermarkContainer.appendChild(link);
+        this.target.appendChild(watermarkContainer);
+    }
+    
+
+  
+    
+    
+
     private getReportLevelLicenseKey(dataView: powerbi.DataView): string | null {
         if (!dataView?.metadata?.objects?.reportSettings?.sharedLicenseKey) {
             return null;
@@ -469,22 +563,40 @@ export class Visual implements IVisual {
         }
     
         // Show success message temporarily
-        this.showLicenseSuccess();
+        this.showLicenseMessage('License validated successfully!', 'success')
     }
     
-    private showLicenseSuccess() {
-        console.log('Showing success message');
+
+    private showLicenseMessage(message: string, type: 'success' | 'warning' | 'error') {
         const successMessage = document.createElement('div');
         successMessage.style.position = 'absolute';
         successMessage.style.bottom = '50px';
         successMessage.style.left = '50%';
         successMessage.style.transform = 'translateX(-50%)';
-        successMessage.style.backgroundColor = 'rgba(0, 128, 0, 0.8)';
-        successMessage.style.color = 'white';
         successMessage.style.padding = '10px 20px';
         successMessage.style.borderRadius = '5px';
         successMessage.style.zIndex = '2000';
-        successMessage.innerText = 'License validated successfully!';
+        successMessage.innerText = message;
+        
+        // Set different styling based on message type
+        switch (type) {
+            case 'success':
+                successMessage.style.backgroundColor = 'rgba(40, 167, 69, 0.8)';
+                successMessage.style.color = 'white';
+                break;
+            case 'warning':
+                successMessage.style.backgroundColor = 'rgba(255, 193, 7, 0.8)';
+                successMessage.style.color = 'black';
+                break;
+            case 'error':
+                successMessage.style.backgroundColor = 'rgba(220, 53, 69, 0.8)';
+                successMessage.style.color = 'white';
+                break;
+        }
+        
+        // Add ARIA role for accessibility
+        successMessage.setAttribute('role', 'alert');
+        
         this.target.appendChild(successMessage);
     
         // Remove after 3 seconds
@@ -494,31 +606,9 @@ export class Visual implements IVisual {
             }
         }, 3000);
     }
+
+
     
-    private showLicenseWarning() {
-        console.log('Showing license warning');
-        
-        // Remove any existing watermark first
-        const existingWatermark = this.target.querySelector('.license-watermark');
-        if (existingWatermark) {
-            existingWatermark.remove();
-        }
-    
-        const watermark = document.createElement('a');
-        watermark.className = 'license-watermark';  // Add class for easy finding later
-        watermark.style.position = 'absolute';
-        watermark.style.bottom = '10px';
-        watermark.style.left = '50%';
-        watermark.style.transform = 'translateX(-50%)';
-        watermark.style.color = 'rgba(0, 0, 0, 0.5)';
-        watermark.style.fontSize = '28px';
-        watermark.style.zIndex = '1000';
-        watermark.style.textDecoration = 'none';
-        watermark.href = 'https://www.bimappy.nl';
-        watermark.target = '_blank';
-        watermark.innerText = 'BIMappy Unlicensed';
-        this.target.appendChild(watermark);
-    }
     
     private persistSharedLicenseKey(licenseKey: string) {
         console.log('Persisting shared license key:', licenseKey);
@@ -641,65 +731,9 @@ export class Visual implements IVisual {
     
    
 
-    private handleMapBounds(options: VisualUpdateOptions) {
-        if (!this.formattingSettings?.mapBoundsCard) {
-            console.log('mapBoundsCard not initialized');
-            return;
-        }
-    
-        // Log the raw object first
-        console.log('Raw mapBoundsCard:', this.formattingSettings.mapBoundsCard);
-    
-        // Check if we have persisted properties in the dataView
-        const objects = options.dataViews[0].metadata?.objects;
-        if (objects?.mapBoundsCard) {
-            console.log('Found persisted map bounds:', objects.mapBoundsCard);
-            
-            // Update formatting settings with persisted values
-            this.formattingSettings.mapBoundsCard.north.value = Number(objects.mapBoundsCard['north']) || 0;
-            this.formattingSettings.mapBoundsCard.south.value = Number(objects.mapBoundsCard['south']) || 0;
-            this.formattingSettings.mapBoundsCard.east.value = Number(objects.mapBoundsCard['east']) || 0;
-            this.formattingSettings.mapBoundsCard.west.value = Number(objects.mapBoundsCard['west']) || 0;
-            this.formattingSettings.mapBoundsCard.zoom.value = Number(objects.mapBoundsCard['zoom']) || 0;
-    
-            console.log('Updated formatting settings with persisted values:', {
-                north: this.formattingSettings.mapBoundsCard.north.value,
-                south: this.formattingSettings.mapBoundsCard.south.value,
-                east: this.formattingSettings.mapBoundsCard.east.value,
-                west: this.formattingSettings.mapBoundsCard.west.value,
-                zoom: this.formattingSettings.mapBoundsCard.zoom.value
-            });
-    
-            // Only set bounds if we have valid values
-            if (this.formattingSettings.mapBoundsCard.north.value !== 0 &&
-                this.formattingSettings.mapBoundsCard.south.value !== 0 &&
-                this.formattingSettings.mapBoundsCard.east.value !== 0 &&
-                this.formattingSettings.mapBoundsCard.west.value !== 0) {
-                
-                const bounds = L.latLngBounds(
-                    L.latLng(this.formattingSettings.mapBoundsCard.south.value, 
-                            this.formattingSettings.mapBoundsCard.west.value),
-                    L.latLng(this.formattingSettings.mapBoundsCard.north.value, 
-                            this.formattingSettings.mapBoundsCard.east.value)
-                );
-    
-                this.map.fitBounds(bounds);
-                if (this.formattingSettings.mapBoundsCard.zoom.value !== 0) {
-                    this.map.setZoom(this.formattingSettings.mapBoundsCard.zoom.value);
-                }
-            }
-        } else {
-            console.log('No persisted map bounds found in dataView');
-        }
-    }
-
    
     
-    private handleFilterChange() {
-        console.log('Handling filter change...');
-        // Voer hier de logica uit om de kaart of andere visualisaties bij te werken
-        this.updateVisualBasedOnFilters();
-    }
+ 
 
     private updateVisualBasedOnFilters() {
         // Logica om de visual bij te werken op basis van de huidige filters
@@ -708,20 +742,214 @@ export class Visual implements IVisual {
         this.drawPoints(this.lastDataView);
         this.updateMarkerStyle();
     }
+
+    private validateGeoJsonUrl(url: string): boolean {
+        // Check if the URL is not empty and is a valid URL format
+        if (!url || url === '') {
+            return false;
+        }
+    
+        try {
+            // Create URL object to validate format and extract components
+            const urlObj = new URL(url);
+            
+            // Only allow https
+            if (urlObj.protocol !== 'https:') {
+                console.warn('Rejected non-HTTPS URL:', url);
+                this.showLicenseMessage('Only HTTPS URLs are allowed for security reasons.', 'warning');
+                return false;
+            }
+            
+            // Only allow URLs from trusted domains (whitelist)
+            const trustedDomains = [
+                // Base map providers
+                'openstreetmap.org',
+                'opentopomap.org',
+                'stadiamaps.com',
+                'arcgisonline.com',
+                
+                // Cloud storage platforms
+                'amazonaws.com',
+                's3.amazonaws.com',
+                'storage.googleapis.com',
+                'blob.core.windows.net',
+                
+                // Mapping/GIS platforms
+                'arcgis.com',
+                'mapbox.com',
+                'api.mapbox.com',
+                'carto.com',
+                'services.arcgis.com',
+                
+                // Data portals and geospatial services
+                'data.humdata.org',
+                'naturalearthdata.com',
+                'geojson.xyz',
+                'geojson.io',
+                'geo.api.gouv.fr',
+                
+                // Code repositories
+                'githubusercontent.com',
+                'raw.githubusercontent.com',
+                'gist.githubusercontent.com',
+                'gitlab.io',
+                'gitlab-static.net',
+                
+                // International government and research
+                'data.gov.uk',
+                'data.gov',
+                'open.canada.ca',
+                'data.europa.eu',
+                'eurostat.eu',
+                'un.org',
+                'who.int',
+                'worldbank.org',
+                'data.oecd.org',
+                
+                // Dutch sources
+                'bimappy.nl',
+                'bimappy.com',
+                'pdok.nl',
+                'data.overheid.nl',
+                'kadaster.nl',
+                'cbs.nl',
+                'rivm.nl',
+                'rvo.nl',
+                'basisregistraties.nl',
+                'esri.nl',
+                'esri.com',
+                'nationaalgeoregister.nl',
+                'geoservices.nl'
+            ];
+            
+            const isDomainTrusted = trustedDomains.some(domain => 
+                urlObj.hostname === domain || urlObj.hostname.endsWith('.' + domain)
+            );
+            
+            if (!isDomainTrusted) {
+                console.warn('Rejected URL from untrusted domain:', urlObj.hostname);
+                this.showLicenseMessage('URL domain not in allowed list.', 'warning');
+                return false;
+            }
+            
+            // Additional validation - only allow common GeoJSON extensions
+            // This helps prevent loading arbitrary files
+            if (urlObj.pathname) {
+                const lowercasePath = urlObj.pathname.toLowerCase();
+                if (!(lowercasePath.endsWith('.geojson') || 
+                      lowercasePath.endsWith('.json') ||
+                      // API endpoints that return GeoJSON might not have extensions
+                      lowercasePath.includes('/api/') || 
+                      lowercasePath.includes('/geoserver/') ||
+                      lowercasePath.includes('/arcgis/rest/services/'))) {
+                    console.warn('Rejected URL with suspicious file extension:', urlObj.pathname);
+                    this.showLicenseMessage('URL must point to a .geojson or .json file.', 'warning');
+                    return false;
+                }
+            }
+            
+            return true;
+        } catch (e) {
+            console.error('Invalid URL format:', e);
+            this.showLicenseMessage('Invalid URL format.', 'error');
+            return false;
+        }
+    }
 private async loadGeoJSONData(url: string) {
+    if (!this.validateGeoJsonUrl(url)) {
+        console.error('GeoJSON URL validation failed:', url);
+        return;
+    }
+    
     try {
-        const response = await fetch(url);
+        // Add a timeout to the fetch to prevent hanging requests
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        
+        const response = await fetch(url, {
+            method: 'GET',
+            signal: controller.signal,
+            credentials: 'omit', // Don't send cookies for security
+            headers: {
+                'Accept': 'application/json, application/geo+json'
+            }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        
+        // Validate content type
+        const contentType = response.headers.get('content-type');
+        if (contentType && 
+            !contentType.includes('application/json') && 
+            !contentType.includes('application/geo+json')) {
+            console.warn('Unexpected content type:', contentType);
+            // Continue anyway, but log the warning
+        }
+        
         const geoJsonData = await response.json();
-        this.geoJSONLayer.loadGeoJSON(geoJsonData); // Pass the data to the external class
+        
+        // Basic schema validation for GeoJSON
+        if (!geoJsonData.type || !geoJsonData.features) {
+            console.error('Invalid GeoJSON format - missing required fields');
+            this.showLicenseMessage('Invalid GeoJSON format.', 'error');
+            return;
+        }
+        
+        // Success path - load the GeoJSON
+        this.geoJSONLayer.loadGeoJSON(geoJsonData);
         this.buildGeoJsonIndex();
+        this.ensureCorrectZIndex(); // Add this line
     } catch (error) {
         console.error('Error loading GeoJSON:', error);
+        
+        if (console.error.name === 'AbortError') {
+            this.showLicenseMessage('GeoJSON request timed out.', 'error');
+        } else {
+            this.showLicenseMessage('Failed to load GeoJSON data.', 'error');
+        }
     }
 }
-  
-    private buildGeoJsonIndex() {
+
+private ensureCorrectZIndex() {
+    // Set GeoJSON to lower z-index
+    const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+    if (geoJsonLayer) {
+        geoJsonLayer.setZIndex(100);
+    }
+    
+    // Set all point layers to higher z-index
+    this.pointsLayer.setZIndex(200);
+    this.selectedPointsLayer.setZIndex(200);
+    this.unselectedPointsLayer.setZIndex(200);
+    
+    // Additionally, ensure all individual markers are on top
+    this.pointsLayer.eachLayer((layer) => {
+        if (layer instanceof L.CircleMarker) {
+            layer.bringToFront();
+        }
+    });
+    
+    this.selectedPointsLayer.eachLayer((layer) => {
+        if (layer instanceof L.CircleMarker) {
+            layer.bringToFront();
+        }
+    });
+    
+    this.unselectedPointsLayer.eachLayer((layer) => {
+        if (layer instanceof L.CircleMarker) {
+            layer.bringToFront();
+        }
+    });
+}
+private buildGeoJsonIndex() {
         this.geoJsonIndex.clear();
         const geoJsonLayer = this.geoJSONLayer.getGeoJSONLayer();
+
+
         console.log('Opbouw Geojson index');
         if (!geoJsonLayer) {
             console.log('No GeoJSON layer available');
@@ -763,21 +991,11 @@ private async loadGeoJSONData(url: string) {
     
     private saveMapBounds() {
         if (!this.map || !this.formattingSettings?.mapBoundsCard) {
-            console.log('Map or settings not initialized');
             return;
         }
     
         const bounds = this.map.getBounds();
         const zoom = this.map.getZoom();
-    
-        // Log current state before saving
-        console.log('Current map state:', {
-            north: bounds.getNorth(),
-            south: bounds.getSouth(),
-            east: bounds.getEast(),
-            west: bounds.getWest(),
-            zoom: zoom
-        });
     
         // Update the formatting settings
         this.formattingSettings.mapBoundsCard.north.value = bounds.getNorth();
@@ -799,16 +1017,6 @@ private async loadGeoJSONData(url: string) {
                 },
                 selector: null
             }]
-        });
-        
-        console.log('Map bounds saved:', {
-            inFormattingSettings: {
-                north: this.formattingSettings.mapBoundsCard.north.value,
-                south: this.formattingSettings.mapBoundsCard.south.value,
-                east: this.formattingSettings.mapBoundsCard.east.value,
-                west: this.formattingSettings.mapBoundsCard.west.value,
-                zoom: this.formattingSettings.mapBoundsCard.zoom.value
-            }
         });
     }
 
@@ -941,7 +1149,7 @@ private async loadGeoJSONData(url: string) {
                     console.log(`Invalid coordinate in row ${index}:`, { lat, lng });
                 }
             }
-    
+            this.ensureCorrectZIndex();
             console.log('Points drawn:', markers.length);
         } catch (error) {
             console.error('Error in drawPoints:', error);
@@ -1047,6 +1255,7 @@ private async loadGeoJSONData(url: string) {
         console.log('PointsLayer markers:', this.pointsLayer.getLayers().length);
         console.log('SelectedPointsLayer markers:', this.selectedPointsLayer.getLayers().length);
         console.log('UnselectedPointsLayer markers:', this.unselectedPointsLayer.getLayers().length);
+        this.ensureCorrectZIndex();
     }
 
     private resetGeoJSONFilter() {
@@ -1063,18 +1272,36 @@ private async loadGeoJSONData(url: string) {
                 this.pointsLayer.addLayer(layer);
                 this.selectedPointsLayer.removeLayer(layer);
                 this.unselectedPointsLayer.removeLayer(layer);
+                
             }
         });
     
         // Clear the selection in Power BI
         this.selectionManager.clear();
         console.log('GeoJSON filter reset and selection cleared');
+        this.ensureCorrectZIndex();
     }
 
  
     private isValidCoordinate(lat: number, lng: number): boolean {
-        return !isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+          // First check for NaN, null or undefined
+    if (lat === null || lng === null || lat === undefined || lng === undefined || 
+        isNaN(lat) || isNaN(lng)) {
+        return false;
     }
+    
+    // Check valid ranges
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return false;
+    }
+    
+    // Check for suspicious zeros or extreme values that might indicate bad data
+    if (lat === 0 && lng === 0) {
+        console.warn('Suspicious coordinate at 0,0 detected');
+    }
+    
+    return true;
+}
 
     private removeGeoJSONLayer() {
         if (this.geoJSONLayer) {

@@ -1,0 +1,5 @@
+{
+  "extends": ["plugin:powerbi-visuals/recommended"],
+  "plugins": ["powerbi-visuals"],
+  "ignorePatterns": [".eslintrc.js", "*.config.js"]
+}
