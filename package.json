@@ -1,7 +1,7 @@
 {
-  "name": "bimappy-geojson",
-  "version": "1.0.0.0",
-  "description": "Your visualization description",
+  "name": "bimappy-geofilter",
+  "version": "1.1.0.5",
+  "description": "Filter coordinates based on GeoJSON url area",
   "scripts": {
     "pbiviz": "pbiviz",
     "start": "pbiviz start",
@@ -15,7 +15,7 @@
     "leaflet": "^1.9.4",
     "leaflet.markercluster": "^1.5.3",
     "lodash": "^4.17.21",
-    "powerbi-visuals-api": "~5.3.0",
+    "powerbi-visuals-api": "^5.10.0",
     "powerbi-visuals-utils-dataviewutils": "^6.1.0",
     "powerbi-visuals-utils-formattingmodel": "^6.0.4",
     "rbush": "^4.0.1"

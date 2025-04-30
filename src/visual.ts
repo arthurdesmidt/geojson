@@ -26,6 +26,7 @@ export class Visual implements IVisual {
     private formattingSettings: VisualFormattingSettingsModel;
     private formattingSettingsService: FormattingSettingsService;
     private recordWarningElement: HTMLElement;
+    private warningElement: HTMLDivElement;
     private host: powerbi.extensibility.visual.IVisualHost;
     private selectionManager: ISelectionManager;
     private pointsLayer: L.LayerGroup; // Layer for all points
@@ -54,6 +55,7 @@ export class Visual implements IVisual {
     previousOpacity: number = 0;
     previousMarkerRadius: number = 0;
     private licenseValidated: boolean = false;
+    private previousTooltipFields: string[] = [];
    
     constructor(options: VisualConstructorOptions) {
         console.log('Visual constructor called');
@@ -215,7 +217,7 @@ this.target.appendChild(this.recordWarningElement);
             this.previousMarkerRadius = 0;
             
             // Show default license warning
-            this.showLicenseWarning();
+            this.showLicenseWatermark();
             console.log('Visual constructor completed successfully');
         } catch (error) {
             console.error('Error initializing visual:', error);
@@ -223,9 +225,8 @@ this.target.appendChild(this.recordWarningElement);
     }
 
     public update(options: VisualUpdateOptions) {
-
         console.log('Update called with type:', options.type);
-
+    
         if (!this.target.offsetParent) {
             console.log('Visual is not active, marking as hidden');
             this.wasHidden = true;
@@ -239,190 +240,259 @@ this.target.appendChild(this.recordWarningElement);
             console.log('No data available');
             return;
         }
-
-        // Save the last data view
-        const currentDataView = options.dataViews[0];
-        this.lastDataView = currentDataView;
-        this.checkRecordCount();
-        // Update formatting settings first
-        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
-            VisualFormattingSettingsModel,
-            this.lastDataView
-        );
-        
-        console.log('Formatting settings updated:', 
-            this.formattingSettings ? 'Success' : 'Failed', 
-            'Cards available:', 
-            this.formattingSettings ? Object.keys(this.formattingSettings).join(', ') : 'None'
-        );
-        // Initialiseer van opgeslagen instellingen - deze moet vóór de andere checks
-        this.initializeFromPersistedSettings(currentDataView);
-
-
-        const sharedKey = this.getReportLevelLicenseKey(this.lastDataView);
-    if (sharedKey) {
-        console.log('Found shared license key at report level:', sharedKey);
-        // Update local settings
-        this.formattingSettings.reportSettings.sharedLicenseKey.value = sharedKey;
-        this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
-        
-        // Validate if needed
-        if (!this.licenseValidated) {
-            this.validateLicense();
-        }
-    } else {
-        // Fall back to other methods
-        this.initializeFromPersistedSettings(this.lastDataView);
-        this.checkStoredLicenseKey();
-    }
     
+        try {
+            // Save the last data view
+            const currentDataView = options.dataViews[0];
+            this.lastDataView = currentDataView;
+            const tooltipFieldsChanged = this.haveTooltipFieldsChanged(currentDataView);
 
-        // Check if validate button was pressed
-        // Check for validate button state change
-        const validateButtonState = this.formattingSettings.licenseCard?.validateButton;
-        console.log('Validate button state:', validateButtonState);
-        
-        if (validateButtonState) {
-            console.log('Validate button is ON, triggering validation');
+            if (tooltipFieldsChanged) {
+                console.log('Tooltip fields changed, redrawing points');
+                this.drawPoints(this.lastDataView);
+                this.updateMarkerStyle();
+            }
+            // Check for aggregations and large record counts
+            this.checkForAggregations(currentDataView);
+            this.checkRecordCount();
             
-            // Reset the button state
-            this.host.persistProperties({
-                merge: [{
-                    objectName: 'licenseCard',
-                    properties: { validateButton: false },
-                    selector: null
-                }]
-            });
-
-        // Get the current license key
-        const licenseKey = this.formattingSettings.licenseCard.licenseKey.value;
-        if (licenseKey) {
-            console.log('License key found, starting validation and persistence');
-            // Store it at report level before validation
-            this.persistSharedLicenseKey(licenseKey);
-            this.validateLicense();
-        } else {
-            console.log('No license key provided');
-            this.showLicenseWarning();
-        }
-    }
+            // Update formatting settings
+            this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
+                VisualFormattingSettingsModel,
+                this.lastDataView
+            );
+            
+            console.log('Formatting settings updated:', 
+                this.formattingSettings ? 'Success' : 'Failed', 
+                'Cards available:', 
+                this.formattingSettings ? Object.keys(this.formattingSettings).join(', ') : 'None'
+            );
+            
+            // Initialize from persisted settings
+            this.initializeFromPersistedSettings(currentDataView);
     
-        // Get the current number of rows
-        const currentRowCount = currentDataView.table?.rows?.length || 0;
+            // Check for license keys
+            const sharedKey = this.getReportLevelLicenseKey(this.lastDataView);
+            if (sharedKey) {
+                console.log('Found shared license key at report level:', sharedKey);
+                // Update local settings
+                this.formattingSettings.reportSettings.sharedLicenseKey.value = sharedKey;
+                this.formattingSettings.licenseCard.licenseKey.value = sharedKey;
+                
+                // Validate if needed
+                if (!this.licenseValidated) {
+                    this.validateLicense();
+                }
+            } else {
+                // Fall back to other methods
+                this.checkStoredLicenseKey();
+            }
     
-        // Check if the number of rows has changed
-        const isRowCountChanged = currentRowCount !== this.previousRowCount;
-        console.log('row count changed', isRowCountChanged, currentRowCount, this.previousRowCount);
-        
-        // Update the previous row count
-        this.previousRowCount = currentRowCount;
+            // Check if validate button was pressed
+            const validateButtonState = this.formattingSettings.licenseCard?.validateButton;
+            console.log('Validate button state:', validateButtonState);
+            
+            if (validateButtonState) {
+                console.log('Validate button is ON, triggering validation');
+                
+                // Reset the button state
+                this.host.persistProperties({
+                    merge: [{
+                        objectName: 'licenseCard',
+                        properties: { validateButton: false },
+                        selector: null
+                    }]
+                });
     
-        if (this.lastDataView.table) {
-            console.log('Table columns:', this.lastDataView.table.columns);
-            console.log('Number of rows:', this.lastDataView.table.rows.length);
-        } else {
-            console.log('No table data available');
-        }
-    
-        // Handle GeoJSON updates
-        const geoJsonUrl = this.formattingSettings.geoJsonCard.geoJsonUrl.value;
-        const urlChanged = geoJsonUrl !== this.currentGeoJsonUrl;
-        
-        // Handle GeoJSON updates if URL changed
-      
-            if (this.lastDataView) {
-                if (!geoJsonUrl || geoJsonUrl === '') {
-                    console.log('GeoJSON URL removed or reset, removing GeoJSON layer...');
-                    console.log('GeoJSON URL is empty, disabling filter...');
-                    this.formattingSettings.geoJsonCard.activateFilter.visible = false;
-                    this.removeGeoJSONLayer();
-                    this.currentGeoJsonUrl = ''; // Reset the current URL
-                } else if (urlChanged) {
-                    console.log('GeoJSON URL changed:', geoJsonUrl);
-                    // Validate and update only if valid
-                    if (this.validateGeoJsonUrl(geoJsonUrl)) {
-                        this.currentGeoJsonUrl = geoJsonUrl;
-                        this.loadGeoJSONData(geoJsonUrl);
-                        this.formattingSettings.geoJsonCard.activateFilter.visible = true;
-                    } else {
-                        // If URL is invalid, reset the URL in the formatting settings
-                        this.formattingSettings.geoJsonCard.geoJsonUrl.value = this.currentGeoJsonUrl;
-                    }
+                // Get the current license key
+                const licenseKey = this.formattingSettings.licenseCard.licenseKey.value;
+                if (licenseKey) {
+                    console.log('License key found, starting validation and persistence');
+                    // Store it at report level before validation
+                    this.persistSharedLicenseKey(licenseKey);
+                    this.validateLicense();
+                } else {
+                    console.log('No license key provided');
+                    this.showLicenseWatermark();
                 }
             }
     
-        console.log('geojsonlaag settings kleur en opacity'); 
-        const GeoJsonColor = this.formattingSettings.geoJsonCard.layerColor.value.value;
-        if (GeoJsonColor != this.currentGeoJsonColor) {
-            this.currentGeoJsonColor = GeoJsonColor;
-            this.geoJSONLayer.setColor(GeoJsonColor);
-        }
-    
-        const GeoJsonOpacity = this.formattingSettings.geoJsonCard.opacity.value / 100;
-        if (GeoJsonOpacity != this.currentGeoJsonOpacity) {
-            this.currentGeoJsonOpacity = GeoJsonOpacity;
-            this.geoJSONLayer.setOpacity(GeoJsonOpacity);
-        }
-    
-        const isMarkerStyleChanged =
-            this.formattingSettings.markerStyleCard.markerColor.value.value !== this.previousMarkerColor ||
-            this.formattingSettings.markerStyleCard.borderColor.value.value !== this.previousBorderColor ||
-            this.formattingSettings.markerStyleCard.borderWidth.value !== this.previousBorderWidth ||
-            this.formattingSettings.markerStyleCard.opacity.value !== this.previousOpacity ||
-            this.formattingSettings.markerStyleCard.markerRadius.value !== this.previousMarkerRadius;
-    
-        if (isMarkerStyleChanged) { 
-            this.updateMarkerStyle();
-        }
-    
-        // Update previous marker style values
-        this.previousMarkerColor = this.formattingSettings.markerStyleCard.markerColor.value.value;
-        this.previousBorderColor = this.formattingSettings.markerStyleCard.borderColor.value.value;
-        this.previousBorderWidth = this.formattingSettings.markerStyleCard.borderWidth.value;
-        this.previousOpacity = this.formattingSettings.markerStyleCard.opacity.value;
-        this.previousMarkerRadius = this.formattingSettings.markerStyleCard.markerRadius.value;
-    
-        // First load handling
-        if (this.isInitialLoad) {
-            console.log('First load - drawing initial points');
-            const markers = this.drawPoints(this.lastDataView);
-            if (this.isInitialLoad && markers.length > 0) {
-                console.log('first load executed', this.isInitialLoad, 'markerslength', markers.length);
-                this.map.fitBounds(L.latLngBounds(markers), {
-                    padding: [50, 50],
-                    maxZoom: 15
-                });
-                this.isInitialLoad = false;
-                this.updateMarkerStyle();
-            }
-        }
-    
-        // Row count changed handling
-        if (isRowCountChanged) {
-            console.log('Row count changed -draw changes');
-            this.updateVisualBasedOnFilters();
-        }
-    
-        console.log("einde instellen staat van markers");
-    
-        const isFilterActivated = this.formattingSettings.geoJsonCard.activateFilter.value;
-        if (isFilterActivated !== this.previousFilterState) {
-            if (isFilterActivated) {
-                console.log('Filter is activated, applying GeoJSON filter...', isFilterActivated, this.previousFilterState);
-                this.applyGeoJSONFilter();
+            // Get valid latitude and longitude values
+            const coordinates = this.getLatLongValues(currentDataView);
+            
+            if (coordinates.lat.length > 0 && coordinates.lng.length > 0) {
+                // Process GeoJSON settings
+                const geoJsonUrl = this.formattingSettings.geoJsonCard.geoJsonUrl.value;
+                const urlChanged = geoJsonUrl !== this.currentGeoJsonUrl;
+                
+                // Handle GeoJSON updates if URL changed
+                if (this.lastDataView) {
+                    if (!geoJsonUrl || geoJsonUrl === '') {
+                        console.log('GeoJSON URL removed or reset, removing GeoJSON layer...');
+                        console.log('GeoJSON URL is empty, disabling filter...');
+                        this.formattingSettings.geoJsonCard.activateFilter.visible = false;
+                        this.removeGeoJSONLayer();
+                        this.currentGeoJsonUrl = ''; // Reset the current URL
+                    } else if (urlChanged) {
+                        console.log('GeoJSON URL changed:', geoJsonUrl);
+                        // Validate and update only if valid
+                        if (this.validateGeoJsonUrl(geoJsonUrl)) {
+                            this.currentGeoJsonUrl = geoJsonUrl;
+                            this.loadGeoJSONData(geoJsonUrl);
+                            this.formattingSettings.geoJsonCard.activateFilter.visible = true;
+                        } else {
+                            // If URL is invalid, reset the URL in the formatting settings
+                            this.formattingSettings.geoJsonCard.geoJsonUrl.value = this.currentGeoJsonUrl;
+                        }
+                    }
+                }
+            
+                // Update GeoJSON layer styling
+                console.log('geojsonlaag settings kleur en opacity'); 
+                const GeoJsonColor = this.formattingSettings.geoJsonCard.layerColor.value.value;
+                if (GeoJsonColor != this.currentGeoJsonColor) {
+                    this.currentGeoJsonColor = GeoJsonColor;
+                    this.geoJSONLayer.setColor(GeoJsonColor);
+                }
+            
+                const GeoJsonOpacity = this.formattingSettings.geoJsonCard.opacity.value / 100;
+                if (GeoJsonOpacity != this.currentGeoJsonOpacity) {
+                    this.currentGeoJsonOpacity = GeoJsonOpacity;
+                    this.geoJSONLayer.setOpacity(GeoJsonOpacity);
+                }
+            
+                // Check if marker style has changed
+                const isMarkerStyleChanged =
+                    this.formattingSettings.markerStyleCard.markerColor.value.value !== this.previousMarkerColor ||
+                    this.formattingSettings.markerStyleCard.borderColor.value.value !== this.previousBorderColor ||
+                    this.formattingSettings.markerStyleCard.borderWidth.value !== this.previousBorderWidth ||
+                    this.formattingSettings.markerStyleCard.opacity.value !== this.previousOpacity ||
+                    this.formattingSettings.markerStyleCard.markerRadius.value !== this.previousMarkerRadius;
+            
+                if (isMarkerStyleChanged) { 
+                    this.updateMarkerStyle();
+                }
+            
+                // Update previous marker style values
+                this.previousMarkerColor = this.formattingSettings.markerStyleCard.markerColor.value.value;
+                this.previousBorderColor = this.formattingSettings.markerStyleCard.borderColor.value.value;
+                this.previousBorderWidth = this.formattingSettings.markerStyleCard.borderWidth.value;
+                this.previousOpacity = this.formattingSettings.markerStyleCard.opacity.value;
+                this.previousMarkerRadius = this.formattingSettings.markerStyleCard.markerRadius.value;
+            
+                // First load handling
+                if (this.isInitialLoad) {
+                    console.log('First load - drawing initial points');
+                    const markers = this.drawPoints(this.lastDataView);
+                    if (this.isInitialLoad && markers.length > 0) {
+                        console.log('first load executed', this.isInitialLoad, 'markerslength', markers.length);
+                        this.fitMapToPoints();
+                        this.isInitialLoad = false;
+                        this.updateMarkerStyle();
+                    }
+                }
+            
+                // Row count changed handling
+                const currentRowCount = currentDataView.table?.rows?.length || 0;
+                const isRowCountChanged = currentRowCount !== this.previousRowCount;
+                this.previousRowCount = currentRowCount;
+                
+                if (isRowCountChanged) {
+                    console.log('Row count changed -draw changes');
+                    this.updateVisualBasedOnFilters();
+                }
+            
+                // Check filter state
+                const isFilterActivated = this.formattingSettings.geoJsonCard.activateFilter.value;
+                if (isFilterActivated !== this.previousFilterState) {
+                    if (isFilterActivated) {
+                        console.log('Filter is activated, applying GeoJSON filter...', isFilterActivated, this.previousFilterState);
+                        this.applyGeoJSONFilter();
+                    } else {
+                        console.log('Filter is deactivated, resetting GeoJSON filter...', isFilterActivated, this.previousFilterState);
+                        this.resetGeoJSONFilter();
+                        const markers = this.drawPoints(this.lastDataView);
+                        this.updateMarkerStyle();
+                    }
+            
+                    // Update the previous filter state
+                    this.previousFilterState = isFilterActivated;
+                }
             } else {
-                console.log('Filter is deactivated, resetting GeoJSON filter...', isFilterActivated, this.previousFilterState);
-                this.resetGeoJSONFilter();
-                const markers = this.drawPoints(this.lastDataView);
-                this.updateMarkerStyle();
+                // No valid coordinates found
+                this.showWarning("No valid coordinates found. Please check your latitude and longitude data.");
             }
-    
-            // Update the previous filter state
-            this.previousFilterState = isFilterActivated;
+        } catch (error) {
+            console.error('Error updating visual:', error);
+            this.showWarning("An error occurred while updating the map. Try refreshing the visual.");
         }
-
     }
 
+    private haveTooltipFieldsChanged(dataView: powerbi.DataView): boolean {
+        if (!dataView.table?.columns) {
+            return false;
+        }
+        
+        // Get current tooltip fields
+        const currentTooltipFields: string[] = [];
+        dataView.table.columns.forEach(column => {
+            if (column.roles && column.roles.tooltipFields) {
+                currentTooltipFields.push(column.displayName);
+            }
+        });
+        
+        // Check if different from previous
+        const hasChanged = 
+            this.previousTooltipFields.length !== currentTooltipFields.length ||
+            !this.previousTooltipFields.every(field => currentTooltipFields.includes(field));
+        
+        // Update previous tooltip fields for next check
+        this.previousTooltipFields = [...currentTooltipFields];
+        
+        return hasChanged;
+    }
+    private checkForAggregations(dataView: powerbi.DataView): void {
+        if (dataView && dataView.metadata && dataView.metadata.columns) {
+          const latColumn = dataView.metadata.columns.find(col => col.roles && col.roles.latitude);
+          const lngColumn = dataView.metadata.columns.find(col => col.roles && col.roles.longitude);
+          
+          if ((latColumn && latColumn.aggregates) || (lngColumn && lngColumn.aggregates)) {
+            this.showWarning("Aggregating latitude or longitude values may cause unexpected results. Please use the original values.");
+          } else {
+            this.hideWarning();
+          }
+        }
+      }
+
+      private getLatLongValues(dataView: powerbi.DataView): {lat: number[], lng: number[]} {
+        const latValues: number[] = [];
+        const lngValues: number[] = [];
+        
+        if (dataView && dataView.table && dataView.table.rows) {
+          // Find latitude and longitude column indices
+          const latIndex = dataView.table.columns.findIndex(col => col.roles && col.roles.latitude);
+          const lngIndex = dataView.table.columns.findIndex(col => col.roles && col.roles.longitude);
+          
+          if (latIndex >= 0 && lngIndex >= 0) {
+            dataView.table.rows.forEach(row => {
+              // Handle different data types (number, string, etc.)
+              let lat = row[latIndex];
+              let lng = row[lngIndex];
+              
+              // Convert to number if possible
+              lat = typeof lat === 'number' ? lat : parseFloat(String(lat));
+              lng = typeof lng === 'number' ? lng : parseFloat(String(lng));
+              
+              if (this.isValidCoordinate(lat, lng)) {
+                latValues.push(lat);
+                lngValues.push(lng);
+              }
+            });
+          }
+        }
+        
+        return { lat: latValues, lng: lngValues };
+      }
     private checkRecordCount() {
         if (!this.lastDataView?.table?.rows) return;
         
@@ -434,7 +504,30 @@ this.target.appendChild(this.recordWarningElement);
             this.recordWarningElement.style.display = 'none';
         }
     }
-
+    private showWarning(message: string): void {
+        if (!this.warningElement) {
+          this.warningElement = document.createElement('div');
+          this.warningElement.style.position = 'absolute';
+          this.warningElement.style.top = '10px';
+          this.warningElement.style.left = '10px';
+          this.warningElement.style.backgroundColor = '#FFF3CD';
+          this.warningElement.style.color = '#856404';
+          this.warningElement.style.padding = '10px';
+          this.warningElement.style.borderRadius = '5px';
+          this.warningElement.style.zIndex = '1000';
+          this.warningElement.style.display = 'none';
+          this.target.appendChild(this.warningElement);
+        }
+        
+        this.warningElement.textContent = message;
+        this.warningElement.style.display = 'block';
+      }
+      
+      private hideWarning(): void {
+        if (this.warningElement) {
+          this.warningElement.style.display = 'none';
+        }
+      }
     private validateLicense() {
         console.log('Validate license called');
         
@@ -448,7 +541,7 @@ this.target.appendChild(this.recordWarningElement);
         
         if (!licenseKey) {
             console.log('No license key provided');
-            this.showLicenseWarning();
+            this.showLicenseWatermark();
             return;
         }
         
@@ -474,12 +567,12 @@ this.target.appendChild(this.recordWarningElement);
         } else {
             console.log('License invalid');
             this.licenseValidated = false;
-            this.showLicenseWarning();
+            this.showLicenseWatermark();
         }
     }
     
 
-    private showLicenseWarning() {
+    private showLicenseWatermark() {
         console.log('Showing license warning');
         
         // Remove any existing watermark first
@@ -1156,6 +1249,28 @@ private buildGeoJsonIndex() {
         }
         return markers;
     }
+    private fitMapToPoints(): void {
+        // Check if we have any markers in the layer
+        if (this.pointsLayer && this.pointsLayer.getLayers().length > 0) {
+          // Create a bounds object
+          const bounds = L.latLngBounds([]);
+          
+          // Add all marker positions to the bounds
+          this.pointsLayer.eachLayer((layer: L.Layer) => {
+            if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+              bounds.extend(layer.getLatLng());
+            }
+          });
+          
+          // Only adjust the view if we have valid bounds
+          if (bounds.isValid()) {
+            this.map.fitBounds(bounds, {
+              padding: [50, 50],  // Add some padding around the points
+              maxZoom: 15         // Don't zoom in too far
+            });
+          }
+        }
+      }
 
     private updateMarkerStyle() {
         // Define the new marker style based on formatting settings
