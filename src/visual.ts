@@ -16,6 +16,7 @@ import * as _ from 'lodash';
 import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructorOptions;
 import VisualUpdateOptions = powerbi.extensibility.visual.VisualUpdateOptions;
 import IVisual = powerbi.extensibility.visual.IVisual;
+import IVisualHost = powerbi.extensibility.visual.IVisualHost;
 import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import ISelectionManager = powerbi.extensibility.ISelectionManager;
 
@@ -56,6 +57,7 @@ export class Visual implements IVisual {
     previousMarkerRadius: number = 0;
     private licenseValidated: boolean = false;
     private previousTooltipFields: string[] = [];
+    private container: HTMLElement;
    
     constructor(options: VisualConstructorOptions) {
         console.log('Visual constructor called');
@@ -75,7 +77,7 @@ export class Visual implements IVisual {
         
         console.log('Target element:', this.target);
         this.host = options.host;
-        
+        this.container = options.element;
         // Create timer element
         this.timerElement = document.createElement('div');
         this.timerElement.style.position = 'absolute';
@@ -137,6 +139,7 @@ this.target.appendChild(this.recordWarningElement);
             });
             
             console.log('Map initialized');
+            this.setupContextMenu();
     
             // Add a tile layer (OpenStreetMap)
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -240,7 +243,7 @@ this.target.appendChild(this.recordWarningElement);
             console.log('No data available');
             return;
         }
-    
+        
         try {
             // Save the last data view
             const currentDataView = options.dataViews[0];
@@ -426,6 +429,158 @@ this.target.appendChild(this.recordWarningElement);
             console.error('Error updating visual:', error);
             this.showWarning("An error occurred while updating the map. Try refreshing the visual.");
         }
+    }
+
+  private setupContextMenu(): void {
+        // Voeg een contextmenu-event toe aan de container
+        this.container.addEventListener('contextmenu', (e: MouseEvent) => {
+            e.preventDefault(); // Voorkom standaard browser contextmenu
+            
+            // Creëer een aangepast contextmenu element
+            const menuDiv = document.createElement('div');
+            menuDiv.className = 'custom-context-menu';
+            menuDiv.style.position = 'absolute';
+            menuDiv.style.left = e.clientX + 'px';
+            menuDiv.style.top = e.clientY + 'px';
+            menuDiv.style.backgroundColor = 'white';
+            menuDiv.style.border = '1px solid #ccc';
+            menuDiv.style.boxShadow = '2px 2px 5px rgba(0,0,0,0.3)';
+            menuDiv.style.zIndex = '1000';
+            menuDiv.style.padding = '5px 0';
+            
+            // Menu-items toevoegen
+            const menuItems = [
+                { title: "Reset view", callback: () => this.resetMapView() },
+                { title: "Refresh data", callback: () => this.refreshData() },
+                { title: "Export view", callback: () => this.exportMapView() }
+            ];
+            
+            menuItems.forEach(item => {
+                const menuItem = document.createElement('div');
+                menuItem.innerText = item.title;
+                menuItem.style.padding = '5px 10px';
+                menuItem.style.cursor = 'pointer';
+                
+                menuItem.addEventListener('mouseover', () => {
+                    menuItem.style.backgroundColor = '#f0f0f0';
+                });
+                
+                menuItem.addEventListener('mouseout', () => {
+                    menuItem.style.backgroundColor = 'transparent';
+                });
+                
+                menuItem.addEventListener('click', () => {
+                    // Voer de callback uit en verwijder het menu
+                    item.callback();
+                    document.body.removeChild(menuDiv);
+                });
+                
+                menuDiv.appendChild(menuItem);
+            });
+            
+            // Voeg het menu toe aan het document
+            document.body.appendChild(menuDiv);
+            
+            // Verwijder menu wanneer ergens anders wordt geklikt
+            const clickHandler = () => {
+                if (document.body.contains(menuDiv)) {
+                    document.body.removeChild(menuDiv);
+                }
+                document.removeEventListener('click', clickHandler);
+            };
+            
+            // Een korte timeout zodat het huidige klikevent niet direct het menu sluit
+            setTimeout(() => {
+                document.addEventListener('click', clickHandler);
+            }, 100);
+        });
+    }
+    
+    // Functie om markers individuele contextmenu's te geven
+    public addMarkerContextMenu(markerElement: HTMLElement, dataPoint: any): void {
+        markerElement.addEventListener('contextmenu', (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation(); // Voorkom dat het hoofdcontextmenu wordt geopend
+            
+            // Creëer een aangepast contextmenu voor de marker
+            const menuDiv = document.createElement('div');
+            menuDiv.className = 'custom-marker-context-menu';
+            menuDiv.style.position = 'absolute';
+            menuDiv.style.left = e.clientX + 'px';
+            menuDiv.style.top = e.clientY + 'px';
+            menuDiv.style.backgroundColor = 'white';
+            menuDiv.style.border = '1px solid #ccc';
+            menuDiv.style.boxShadow = '2px 2px 5px rgba(0,0,0,0.3)';
+            menuDiv.style.zIndex = '1000';
+            menuDiv.style.padding = '5px 0';
+            
+            // Menu-items voor markers
+            const menuItems = [
+                { title: "Show details", callback: () => this.showLocationDetails(dataPoint) },
+                { title: "Center map here", callback: () => this.centerMapOnLocation(dataPoint) }
+            ];
+            
+            menuItems.forEach(item => {
+                const menuItem = document.createElement('div');
+                menuItem.innerText = item.title;
+                menuItem.style.padding = '5px 10px';
+                menuItem.style.cursor = 'pointer';
+                
+                menuItem.addEventListener('mouseover', () => {
+                    menuItem.style.backgroundColor = '#f0f0f0';
+                });
+                
+                menuItem.addEventListener('mouseout', () => {
+                    menuItem.style.backgroundColor = 'transparent';
+                });
+                
+                menuItem.addEventListener('click', () => {
+                    item.callback();
+                    document.body.removeChild(menuDiv);
+                });
+                
+                menuDiv.appendChild(menuItem);
+            });
+            
+            document.body.appendChild(menuDiv);
+            
+            const clickHandler = () => {
+                if (document.body.contains(menuDiv)) {
+                    document.body.removeChild(menuDiv);
+                }
+                document.removeEventListener('click', clickHandler);
+            };
+            
+            setTimeout(() => {
+                document.addEventListener('click', clickHandler);
+            }, 100);
+        });
+    }
+    
+    // Implementeer de helper-functies
+    private showLocationDetails(dataPoint: any): void {
+        console.log("Showing details for location:", dataPoint);
+        // Jouw implementatie
+    }
+    
+    private centerMapOnLocation(dataPoint: any): void {
+        console.log("Centering map on location:", dataPoint);
+        // Jouw implementatie
+    }
+    
+    private resetMapView(): void {
+        console.log("Resetting map view");
+        // Jouw implementatie
+    }
+    
+    private refreshData(): void {
+        console.log("Refreshing data");
+        // Jouw implementatie 
+    }
+    
+    private exportMapView(): void {
+        console.log("Exporting map view");
+        // Jouw implementatie
     }
 
     private haveTooltipFieldsChanged(dataView: powerbi.DataView): boolean {
@@ -634,6 +789,8 @@ this.target.appendChild(this.recordWarningElement);
         const key = dataView.metadata.objects.reportSettings.sharedLicenseKey as string;
         return key || null;
     }
+
+    
 
     private enableFullFunctionality() {
         console.log('Enabling full functionality');
@@ -1234,6 +1391,8 @@ private buildGeoJsonIndex() {
                     marker.on('click', () => {
                         this.selectionManager.select(selectionId);
                     });
+
+                   
     
                     // Add marker to the points layer
                     this.pointsLayer.addLayer(marker);
