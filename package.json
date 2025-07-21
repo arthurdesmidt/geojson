@@ -1,6 +1,6 @@
 {
   "name": "bimappy-geofilter",
-  "version": "1.1.0.5",
+  "version": "1.1.1.5",
   "description": "Filter coordinates based on GeoJSON url area",
   "scripts": {
     "pbiviz": "pbiviz",
